@@ -1,0 +1,7 @@
+_base_: resnet50_adamw.yaml
+_scheduler_:
+  gpus: 2
+data:
+  batch_size: 512
+optimizer:
+  lr: 6.0e-4

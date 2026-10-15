@@ -1,0 +1,22 @@
+# Base ImageNet recipe for ResNet-50
+_scheduler_:
+  gpus: 1
+  estimated_duration: 3h
+
+model:
+  arch: resnet50
+  pretrained: false
+data:
+  dataset: imagenet
+  batch_size: 256
+  num_workers: 8
+  augment: [random_resized_crop, flip]
+optimizer:
+  type: sgd
+  lr: 0.1  # scaled for batch 256
+  momentum: 0.9
+  weight_decay: 1.0e-4
+schedule:
+  epochs: 90
+  warmup_epochs: 5
+seed: 42
