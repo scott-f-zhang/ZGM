@@ -80,12 +80,10 @@ TaskCard.-dragging {
 }
 #gpu-rows {
     height: 1fr;
+    scrollbar-size-vertical: 1;
 }
 GPURow {
-    height: 1fr;
-    min-height: 1;
-    max-height: 4;
-    border-bottom: none;
+    height: 4;  /* set per row from its tallest card */
 }
 
 /* ---------- Configs view ---------- */

@@ -1,17 +1,25 @@
-"""Planning logic: conflict validation and the single AssignmentService.
+"""Planning logic: an ordered queue of planned work with derived start times.
 
-Both keyboard placement and mouse drag-and-drop end up in
-``AssignmentService.assign``/``move`` so they share validation and persistence.
+The user decides *which GPUs* and *in what order*; the start time of each
+planned assignment is derived by list scheduling in ``seq`` order: a task starts
+as soon as every GPU it needs is free (after running work and after the planned
+work queued before it on those GPUs). Overlaps therefore cannot be created by
+placement; ``ConflictValidator`` remains as an invariant check.
+
+Keyboard placement and mouse drag-and-drop both go through
+``AssignmentService.assign`` / ``move`` so they share validation and persistence.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from ..models import Assignment, AssignmentState, Task, TaskStatus
 from .task_store import TaskStore
+
+GHOST = "__ghost__"
 
 
 @dataclass
@@ -25,7 +33,19 @@ class Result:
     def message(self) -> str:
         if self.ok:
             return "ok"
-        return self.error or "conflict"
+        return self.error or "invalid placement"
+
+
+@dataclass
+class Slot:
+    """One item in the future part of the timeline (one fixed-width column)."""
+
+    key: str  # assignment id, or GHOST for a placement preview
+    task_id: str
+    gpu_ids: tuple[int, ...]
+    start: datetime
+    end: datetime
+    kind: str  # "running" | "planned" | "ghost"
 
 
 class ConflictValidator:
@@ -70,121 +90,181 @@ class AssignmentService:
         self.gpu_ids = sorted(gpu_ids) if gpu_ids is not None else None
         self.validator = validator or ConflictValidator()
 
+    # queue views -----------------------------------------------------------
+    def planned(self) -> list[Assignment]:
+        return sorted(
+            (a for a in self.store.assignments.values() if a.state == AssignmentState.PLANNED),
+            key=lambda a: (a.seq, a.planned_start),
+        )
+
+    def running(self) -> list[Assignment]:
+        return sorted(
+            (a for a in self.store.assignments.values() if a.state == AssignmentState.RUNNING),
+            key=lambda a: a.actual_start or a.planned_start,
+        )
+
+    def _duration(self, task_id: str):
+        task = self.store.tasks.get(task_id)
+        return task.estimated_duration if task else None
+
+    def simulate(
+        self,
+        order: Sequence[tuple[str, str, tuple[int, ...], str]],
+        now: datetime | None = None,
+    ) -> list[Slot]:
+        """List-schedule ``order`` (key, task_id, gpu_ids, kind) after running work."""
+        now = (now or datetime.now()).replace(second=0, microsecond=0)
+        free_at: dict[int, datetime] = {}
+        slots: list[Slot] = []
+        for a in self.running():
+            start, end = a.display_interval(now)
+            for g in a.display_gpu_ids:
+                free_at[g] = max(free_at.get(g, now), end)
+            slots.append(Slot(a.id, a.task_id, a.display_gpu_ids, start, end, "running"))
+        for key, task_id, gpus, kind in order:
+            dur = self._duration(task_id)
+            if dur is None:
+                continue
+            start = max([now, *(free_at.get(g, now) for g in gpus)])
+            end = start + dur
+            for g in gpus:
+                free_at[g] = end
+            slots.append(Slot(key, task_id, tuple(gpus), start, end, kind))
+        return slots
+
+    def schedule(self, now: datetime | None = None) -> list[Slot]:
+        return self.simulate(
+            [(a.id, a.task_id, a.gpu_ids, "planned") for a in self.planned()], now
+        )
+
+    def recompute(self, now: datetime | None = None, persist: bool = True) -> None:
+        """Re-derive planned start/end from the queue order."""
+        for slot in self.schedule(now):
+            if slot.kind != "planned":
+                continue
+            a = self.store.assignments[slot.key]
+            if (a.planned_start, a.planned_end) != (slot.start, slot.end):
+                a.planned_start, a.planned_end = slot.start, slot.end
+                if persist:
+                    self.store.save_assignment(a, None)
+
+    def preview(
+        self,
+        task_id: str,
+        gpu_ids: Sequence[int],
+        position: int | None,
+        assignment_id: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[list[Slot], Slot | None]:
+        """Schedule as if ``task_id`` were inserted at ``position`` (moving ``assignment_id``)."""
+        base = [a for a in self.planned() if a.id != assignment_id]
+        pos = len(base) if position is None else max(0, min(len(base), position))
+        order = [(a.id, a.task_id, a.gpu_ids, "planned") for a in base]
+        order.insert(pos, (GHOST, task_id, tuple(sorted(gpu_ids)), "ghost"))
+        slots = self.simulate(order, now)
+        ghost = next((s for s in slots if s.key == GHOST), None)
+        return slots, ghost
+
     # queries ---------------------------------------------------------------
     def check(
         self,
         task_id: str,
         gpu_ids: Sequence[int],
-        start: datetime,
         assignment_id: str | None = None,
     ) -> Result:
-        """Validate a placement without persisting it (used for previews)."""
+        """Validate a placement (GPU count/ids and task state) without persisting it."""
         task = self.store.tasks.get(task_id)
         if task is None:
             return Result(False, error=f"unknown task {task_id}")
+        if task.status in (TaskStatus.RUNNING, TaskStatus.COMPLETED):
+            return Result(False, error=f"{task.name} is {task.status.value}")
+        if assignment_id:
+            a = self.store.assignments.get(assignment_id)
+            if a is None or a.state != AssignmentState.PLANNED:
+                return Result(False, error="only planned assignments can be moved")
         err = self.validator.validate_shape(task, list(gpu_ids), self.gpu_ids)
         if err:
             return Result(False, error=err)
-        cand = Assignment(
-            task_id=task_id,
-            gpu_ids=tuple(gpu_ids),
-            planned_start=start,
-            planned_end=start + task.estimated_duration,
-        )
-        if assignment_id:
-            cand.id = assignment_id
-        conflicts = self.validator.find_conflicts(cand, self.store.assignments.values())
-        if conflicts:
-            names = ", ".join(self._task_name(c.task_id) for c in conflicts)
-            return Result(False, cand, conflicts, f"conflicts with {names}")
-        return Result(True, cand)
+        return Result(True)
 
-    def suggest_gpus(self, task: Task, anchor_gpu: int, start: datetime) -> tuple[int, ...]:
-        """anchor + following GPUs; prefers ones free at ``start``."""
-        all_ids = self.gpu_ids if self.gpu_ids is not None else list(range(anchor_gpu + task.required_gpus))
+    def suggest_gpus(self, task: Task, anchor_gpu: int) -> tuple[int, ...]:
+        """Contiguous window of ``required_gpus`` starting at the anchor (clamped)."""
+        all_ids = self.gpu_ids if self.gpu_ids is not None else list(
+            range(anchor_gpu + task.required_gpus))
         n = task.required_gpus
-        if n > len(all_ids):
+        if n >= len(all_ids):  # too many GPUs requested: check() reports it
             return tuple(all_ids)
-        # contiguous window starting at anchor (wrap to fit)
         idx = all_ids.index(anchor_gpu) if anchor_gpu in all_ids else 0
         idx = min(idx, len(all_ids) - n)
-        window = tuple(all_ids[idx: idx + n])
-        if self.check(task.id, window, start).ok:
-            return window
-        # otherwise anchor + any free others
-        end = start + task.estimated_duration
-        free = [g for g in all_ids if g != anchor_gpu and self._gpu_free(g, start, end)]
-        if anchor_gpu in all_ids and len(free) >= n - 1:
-            return tuple(sorted([anchor_gpu, *free[: n - 1]]))
-        return window
-
-    def next_free_slot(
-        self, gpu_ids: Sequence[int], after: datetime, duration: timedelta
-    ) -> datetime:
-        t = after
-        now = datetime.now()
-        for _ in range(1000):
-            blockers = [
-                a
-                for a in self.store.assignments.values()
-                if a.state != AssignmentState.CANCELLED
-                and set(a.display_gpu_ids) & set(gpu_ids)
-                and a.display_interval(now)[0] < t + duration
-                and t < a.display_interval(now)[1]
-            ]
-            if not blockers:
-                return t
-            t = max(b.display_interval(now)[1] for b in blockers)
-        return t
-
-    def _gpu_free(self, gpu: int, start: datetime, end: datetime) -> bool:
-        now = datetime.now()
-        for a in self.store.assignments_on_gpu(gpu):
-            if a.state == AssignmentState.CANCELLED:
-                continue
-            s, e = a.display_interval(now)
-            if s < end and start < e:
-                return False
-        return True
+        return tuple(all_ids[idx: idx + n])
 
     def _task_name(self, task_id: str) -> str:
         t = self.store.tasks.get(task_id)
         return t.name if t else task_id
 
     # commands --------------------------------------------------------------
-    def assign(self, task_id: str, gpu_ids: Sequence[int], start: datetime) -> Result:
+    def _write_order(self, order: list[Assignment], event_for: dict[str, str]) -> None:
+        for i, a in enumerate(order):
+            a.seq = i
+        self.recompute(persist=False)
+        for a in order:
+            self.store.save_assignment(a, event_for.get(a.id))
+
+    def assign(
+        self, task_id: str, gpu_ids: Sequence[int], position: int | None = None
+    ) -> Result:
+        """Queue ``task_id`` on ``gpu_ids`` at ``position`` (None = end of the queue)."""
         existing = self.store.active_assignment(task_id)
         if existing is not None:
-            return self.move(existing.id, gpu_ids, start)
-        res = self.check(task_id, gpu_ids, start)
+            return self.move(existing.id, gpu_ids, position)
+        res = self.check(task_id, gpu_ids)
         if not res.ok:
             return res
-        a = res.assignment
-        assert a is not None
-        self.store.save_assignment(a, "assigned")
         task = self.store.tasks[task_id]
-        if task.status == TaskStatus.PENDING:
+        now = datetime.now().replace(second=0, microsecond=0)
+        a = Assignment(task_id=task_id, gpu_ids=tuple(gpu_ids), planned_start=now,
+                       planned_end=now + task.estimated_duration)
+        order = self.planned()
+        pos = len(order) if position is None else max(0, min(len(order), position))
+        order.insert(pos, a)
+        self.store.assignments[a.id] = a
+        self._write_order(order, {a.id: "assigned"})
+        if task.status in (TaskStatus.PENDING, TaskStatus.FAILED, TaskStatus.CANCELLED):
             task.status = TaskStatus.PLANNED
             self.store.update_task(task, quiet=True)
         self.store.notify()
-        return res
+        return Result(True, a)
 
-    def move(self, assignment_id: str, gpu_ids: Sequence[int], start: datetime) -> Result:
+    def move(
+        self,
+        assignment_id: str,
+        gpu_ids: Sequence[int] | None = None,
+        position: int | None = None,
+    ) -> Result:
+        """Change GPUs and/or queue position of a planned assignment."""
         a = self.store.assignments.get(assignment_id)
         if a is None:
             return Result(False, error=f"unknown assignment {assignment_id}")
-        if a.state != AssignmentState.PLANNED:
-            return Result(False, error=f"cannot move a {a.state.value} assignment")
-        res = self.check(a.task_id, gpu_ids, start, assignment_id=a.id)
+        gpus = tuple(sorted(gpu_ids)) if gpu_ids is not None else a.gpu_ids
+        res = self.check(a.task_id, gpus, assignment_id=a.id)
         if not res.ok:
             return res
-        a.gpu_ids = tuple(sorted(gpu_ids))
-        a.preferred_gpu_ids = a.gpu_ids
-        a.planned_start = start
-        a.planned_end = res.assignment.planned_end  # type: ignore[union-attr]
-        self.store.save_assignment(a, "moved")
+        order = [x for x in self.planned() if x.id != a.id]
+        pos = len(order) if position is None else max(0, min(len(order), position))
+        order.insert(pos, a)
+        a.gpu_ids = gpus
+        a.preferred_gpu_ids = gpus
+        self._write_order(order, {a.id: "moved"})
         self.store.notify()
         return Result(True, a)
+
+    def shift(self, assignment_id: str, delta: int) -> Result:
+        """Move a planned assignment ``delta`` places earlier (<0) or later (>0)."""
+        order = self.planned()
+        idx = next((i for i, x in enumerate(order) if x.id == assignment_id), None)
+        if idx is None:
+            return Result(False, error="only planned assignments can be reordered")
+        return self.move(assignment_id, None, max(0, idx + delta))
 
     def unassign(self, assignment_id: str) -> Result:
         a = self.store.assignments.get(assignment_id)
@@ -193,6 +273,7 @@ class AssignmentService:
         if a.state != AssignmentState.PLANNED:
             return Result(False, error=f"cannot unassign a {a.state.value} assignment")
         self.store.delete_assignment(assignment_id)
+        self._write_order(self.planned(), {})
         task = self.store.tasks.get(a.task_id)
         if task and task.status == TaskStatus.PLANNED and not self.store.active_assignment(task.id):
             task.status = TaskStatus.PENDING

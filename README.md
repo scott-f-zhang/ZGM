@@ -22,27 +22,33 @@ Without NVIDIA drivers or NVML, the app falls back to 4 mock GPUs. You can force
 
 ## Views (btop-style)
 
-`1` / `F1` opens **Schedule** (任务安排). `2` / `F2` opens **Configs** (配置管理). You can also click the tabs. Each view keeps its own state while you switch.
+`1` / `F1` opens **Schedule**. `2` / `F2` opens **Configs**. You can also click the tabs. Each view keeps its own state while you switch.
 
 ### Schedule
 
+The timeline is split at **now** (red `┃`):
+
+- **Left of now: history, drawn to scale.** These tasks really ran, so their blocks use actual start and end times. Use `h`/`l` to pan back in time and `+`/`-` to zoom; the mouse wheel does the same over this zone.
+- **Right of now: the queue, as fixed-width cards.** Each planned assignment gets one column, in queue order. The card shows the full task name (centred, wrapped if needed) and its estimated `start→end`. A multi-GPU task takes the same column on each of its GPU rows. The card width is set by `--card-width` (default 24).
+
+Planned work is an **ordered queue**: you choose the GPUs and the position, and the start time is derived. A task starts as soon as all of its GPUs are free, after the running work and the queued work ahead of it. Placements therefore never overlap. Moving, inserting or removing a card re-times everything after it.
+
 | key | action |
 |---|---|
-| `Tab` | switch focus between the queue and the timeline |
+| `Tab` | switch focus between the task queue and the timeline |
 | `←/→` (queue) | select a card |
-| `a` | start placing the selected task; the ghost starts at the next free slot |
-| `←/→` `↑/↓` (timeline) | move the cursor in time or between GPUs; while placing, this moves the ghost |
-| `Enter` | confirm the placement, or pick up the block under the cursor to move it |
+| `a` | place the selected task; the ghost starts at the end of the queue |
+| `←/→` / `↑/↓` while placing | move the ghost's queue position / anchor GPU (multi-GPU tasks take the following GPUs) |
+| `Enter` | confirm the placement, or pick up the card under the cursor to move it |
 | `Esc` | cancel the placement |
-| `u` / `Del` | unassign the block under the cursor (or the selected task's block) |
-| `h/l`, `Shift+←/→`, mouse wheel | pan the timeline |
-| `+` / `-` | zoom (5m … 6h per cell) |
-| `t` | jump to now |
+| `[` / `]` (or `Shift+←/→`) | move the selected card one place earlier / later |
+| `u` / `Del` | unassign |
+| `t` | reset the view to now |
 | `n` / `d` | new task / delete task |
 
-Mouse: drag a card onto a GPU row to place it, and drag a block to move it. The ghost turns green when the slot is free and red when it conflicts. A placement that conflicts is refused, and nothing is saved.
+Mouse: drag a task card onto a GPU row. Dropping on the left half of a queued card inserts before it; dropping on the right half inserts after it. Drag a queued card to reorder it or move it to another GPU. A drop on the history zone cancels the drag. A placement that can't be made (wrong GPU count, task already running) shows a red ghost and is refused.
 
-Multi-GPU tasks get one assignment that spans several rows, all with the same start and end. Finished runs are drawn from their **actual** start and end times (grey). Planned tasks use the planned start plus the estimate. The estimate is never stored as a completion time.
+The axis header shows each column's estimated start (`~21:10`, or `▶` for running work) and how many columns are scrolled out of view (`◀2 3▶`).
 
 ### Configs: YAML inheritance
 

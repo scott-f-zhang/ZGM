@@ -1,8 +1,9 @@
 """Assignment: a task's place on the GPU timeline.
 
-Planned times come from the user (start) plus the task's estimate. Actual times
-are only ever written by a runtime when execution really starts/ends, so the
-estimate is never mistaken for a completion time.
+Planned work is an ordered queue: ``seq`` is the user's chosen order and the
+planned start/end are *derived* from it (a task starts when all of its GPUs are
+free). Actual times are only ever written by a runtime when execution really
+starts/ends, so the estimate is never mistaken for a completion time.
 
 ``preferred_gpu_ids`` is what the user asked for. ``actual_gpu_ids`` is what the
 runtime really got: Ray treats GPUs as logical resources and picks devices
@@ -41,6 +42,7 @@ class Assignment:
     preferred_gpu_ids: tuple[int, ...] = ()
     actual_gpu_ids: tuple[int, ...] | None = None
     state: AssignmentState = AssignmentState.PLANNED
+    seq: int = 0  # position in the planned queue (global across GPUs)
 
     def __post_init__(self) -> None:
         self.gpu_ids = tuple(sorted(self.gpu_ids))

@@ -60,9 +60,12 @@ class TaskStore:
         return sorted(self.tasks.values(), key=lambda t: (rank.get(t.status, 3), t.created_at))
 
     # assignments -----------------------------------------------------------
-    def save_assignment(self, a: Assignment, event: str) -> None:
+    def save_assignment(self, a: Assignment, event: str | None) -> None:
+        """Persist ``a``; ``event`` (if given) is appended to the history log."""
         self.assignments[a.id] = a
         self.storage.save_assignment(a)
+        if event is None:
+            return
         self.storage.log_event(
             event,
             a.task_id,
@@ -100,7 +103,6 @@ def seed_demo(store: TaskStore, now: datetime | None = None) -> None:
     from .scheduler import AssignmentService  # local: avoid cycle
 
     now = (now or datetime.now()).replace(second=0, microsecond=0)
-    now -= timedelta(minutes=now.minute % 15)  # align to the default 15m grid
     demo = [
         Task("resnet50-baseline", "python train.py --config configs/resnet50_base.yaml",
              1, timedelta(hours=3)),
@@ -116,9 +118,9 @@ def seed_demo(store: TaskStore, now: datetime | None = None) -> None:
         t.created_at = now - timedelta(minutes=10)
         store.add_task(t)
     svc = AssignmentService(store, gpu_ids=None)
-    svc.assign(demo[0].id, (0,), now + timedelta(minutes=30))
-    svc.assign(demo[1].id, (1, 2), now + timedelta(hours=1))
-    svc.assign(demo[2].id, (0,), now + timedelta(hours=4))
+    svc.assign(demo[0].id, (0,))
+    svc.assign(demo[1].id, (1, 2))
+    svc.assign(demo[2].id, (0,))
 
     # one finished run, so the timeline shows history drawn from actual times
     done = Task("data-preprocess", "python prep.py --shards 64", 1, timedelta(hours=2),

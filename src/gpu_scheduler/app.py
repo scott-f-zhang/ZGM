@@ -17,6 +17,7 @@ from .services.gpu_discovery import MockGPUProvider, make_provider
 from .services.scheduler import AssignmentService
 from .services.task_store import TaskStore, seed_demo
 from .storage.sqlite import SqliteStorage
+from .widgets.timeline_state import DEFAULT_CARD_WIDTH, MIN_CARD_WIDTH
 
 
 class GPUSchedulerApp(App):
@@ -39,6 +40,7 @@ class GPUSchedulerApp(App):
         runtime: Runtime | None = None,
         command_template: str = DEFAULT_COMMAND_TEMPLATE,
         stats_interval: float = 2.0,
+        card_width: int = DEFAULT_CARD_WIDTH,
     ) -> None:
         super().__init__()
         self.provider = make_provider(mock_gpus)
@@ -52,6 +54,8 @@ class GPUSchedulerApp(App):
         self.command_template = command_template
         self.runtime = runtime
         self.stats_interval = stats_interval
+        self.card_width = max(MIN_CARD_WIDTH, card_width)
+        self.assignment_service.recompute()  # "now" moved since the plan was saved
         self._runs: dict[str, RunHandle] = {}
 
     def on_mount(self) -> None:
@@ -62,6 +66,7 @@ class GPUSchedulerApp(App):
     def tick(self) -> None:
         self.provider.refresh(self.gpus)
         self.poll_runs()
+        self.assignment_service.recompute(persist=False)  # queued starts follow "now"
         screen = self.screen
         if isinstance(screen, ScheduleScreen) and screen.is_mounted:
             screen.refresh_timeline()
@@ -81,6 +86,7 @@ class GPUSchedulerApp(App):
         task.status = TaskStatus.RUNNING
         self.store.update_task(task, quiet=True)
         self.store.save_assignment(a, "started")
+        self.assignment_service.recompute()
         self.store.notify()
         self.notify(f"Started {task.name} via {self.runtime.name}")
 
@@ -113,4 +119,5 @@ class GPUSchedulerApp(App):
                 }.get(a.state, TaskStatus.FAILED)
                 self.store.update_task(task, quiet=True)
             self.store.save_assignment(a, a.state.value)
+            self.assignment_service.recompute()
             self.store.notify()

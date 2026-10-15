@@ -8,142 +8,226 @@ from rich.segment import Segment
 from rich.style import Style
 from textual import events
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.strip import Strip
 from textual.widget import Widget
 
-from ..models import Assignment, GPUDevice, Task
-from .gpu_row import LABEL_WIDTH, Ghost, GPURow
-from .timeline_state import TimelineState
+from ..models import Assignment, AssignmentState, GPUDevice, Task
+from ..services.scheduler import Slot
+from .gpu_row import LABEL_WIDTH, NOW_COLOR, Card, GPURow, PastBlock
+from .palette import GHOST_BAD, GHOST_OK, HISTORY_COLOR, task_color
+from .timeline_state import DEFAULT_CARD_WIDTH, Hit, TimelineState, wrap_center
+
+FAILED_COLOR = "#7f1d1d"
+
+
+def fmt_when(t: datetime, now: datetime) -> str:
+    return t.strftime("%H:%M") if t.date() == now.date() else t.strftime("%m-%d %H:%M")
+
+
+def card_lines(task: Task | None, slot: Slot, width: int, now: datetime,
+               note: str | None = None) -> list[str]:
+    """Full task name (wrapped, centred) + times (+ GPUs for multi-GPU work)."""
+    inner = width - 2
+    name = task.name if task else slot.task_id
+    if slot.kind == "running":
+        name = "▶ " + name
+    lines = wrap_center(name, inner)
+    if slot.kind == "running":
+        when = f"ends ~{fmt_when(slot.end, now)}"
+    else:
+        when = f"{fmt_when(slot.start, now)}→{slot.end:%H:%M}"
+        if len(when) > inner:
+            when = f"{slot.start:%H:%M}→{slot.end:%H:%M}"
+    lines.append(when.center(inner))
+    if len(slot.gpu_ids) > 1:
+        lines.append(f"GPU {','.join(map(str, slot.gpu_ids))}".center(inner))
+    if note:
+        lines.extend(wrap_center(note, inner))
+    return [f" {line} " for line in lines]
 
 
 class TimeAxis(Widget):
-    """Two-line header: date/hour labels and tick marks."""
+    """Two header lines: past-zone clock ticks | per-column start times."""
 
     def __init__(self, state: TimelineState, **kw) -> None:
         super().__init__(**kw)
         self.state = state
-        self.now = datetime.now()
+        self.columns: dict[int, Slot] = {}
 
     def render_line(self, y: int) -> Strip:
-        width = max(0, self.size.width - LABEL_WIDTH)
         st = self.state
+        width = max(0, self.size.width - LABEL_WIDTH)
         dim = Style(color="#6b7280")
-        head = (
-            f" {st.minutes_per_cell}m/cell  {st.view_start:%m-%d %H:%M}"
-            if y == 0
-            else f" cursor {st.cursor_time:%a %H:%M}"
-        )
+        if y == 0:
+            head = f" history {st.minutes_per_cell}m/cell"
+        else:
+            left, right = st.hidden_cols(len(self.columns))
+            head = " queue" + (f" ◀{left}" if left else "") + (f" {right}▶" if right else "")
         segs = [Segment(f"{head:<{LABEL_WIDTH - 1}.{LABEL_WIDTH - 1}}│", dim)]
         line = [" "] * width
-        # label every N cells so labels don't collide
-        step_min = next(
-            m for m in (15, 30, 60, 120, 180, 360, 720, 1440, 2880)
-            if m / st.minutes_per_cell >= 7 or m == 2880
-        )
-        for x in range(width):
+        pw = min(st.past_width, width)
+        step = next(m for m in (15, 30, 60, 120, 180, 360, 720, 1440, 2880)
+                    if m / st.minutes_per_cell >= 7 or m == 2880)
+        for x in range(pw):
             t = st.x_to_time(x)
             mins = t.hour * 60 + t.minute
-            if mins % step_min < st.minutes_per_cell:  # first cell of a label interval
+            if mins % step < st.minutes_per_cell:
                 if y == 0:
                     label = t.strftime("%m-%d") if mins < st.minutes_per_cell else t.strftime("%H:%M")
-                    for i, ch in enumerate(label):
-                        if x + i < width:
-                            line[x + i] = ch
+                    if x + len(label) <= pw:  # never cut a label at the divider
+                        line[x: x + len(label)] = label
                 else:
-                    line[x] = "┴" if mins < st.minutes_per_cell else "╵"
+                    line[x] = "╵"
             elif y == 1:
                 line[x] = "─"
-        now_x = int(st.time_to_x(self.now) // 1)
-        text = "".join(line)
-        if y == 1 and 0 <= now_x < width:
-            segs.append(Segment(text[:now_x], dim))
-            segs.append(Segment("▼", Style(color="#f43f5e", bold=True)))
-            segs.append(Segment(text[now_x + 1:], dim))
-        else:
-            segs.append(Segment(text, Style(color="#9ca3af")))
+        w = st.card_width
+        for col, slot in self.columns.items():
+            x = st.col_x(col)
+            if x is None or x + w > width:
+                continue
+            if y == 0:
+                text = (("~" if slot.kind != "running" else "▶")
+                        + fmt_when(slot.start, st.now)).center(w)
+            else:
+                text = f" #{col + 1} ".center(w, "─")
+            for i, ch in enumerate(text):
+                line[x + i] = ch
+        segs.append(Segment("".join(line[:st.divider_x]), Style(color="#9ca3af")))
+        if st.divider_x < width:
+            now_label = "▼" if y == 1 else "┃"
+            segs.append(Segment(now_label, Style(color=NOW_COLOR, bold=True)))
+            segs.append(Segment("".join(line[st.divider_x + 1:]), Style(color="#9ca3af")))
         return Strip(segs)
 
 
 class GPUTimeline(Vertical, can_focus=True):
     BINDINGS = [
-        Binding("left", "cursor(-1)", "◀ time", show=False),
-        Binding("right", "cursor(1)", "time ▶", show=False),
+        Binding("left", "cursor(-1)", "◀", show=False),
+        Binding("right", "cursor(1)", "▶", show=False),
         Binding("up,k", "gpu(-1)", "GPU ↑", show=False),
         Binding("down,j", "gpu(1)", "GPU ↓", show=False),
-        Binding("h,shift+left", "pan(-1)", "Pan ◀", show=False),
-        Binding("l,shift+right", "pan(1)", "Pan ▶", show=False),
-        Binding("plus,equals_sign,=", "zoom(-1)", "Zoom in"),
-        Binding("minus,-", "zoom(1)", "Zoom out"),
+        Binding("h", "pan(1)", "History ◀", show=False),
+        Binding("l", "pan(-1)", "History ▶", show=False),
+        Binding("plus,equals_sign,=", "zoom(-1)", "Zoom in", show=False),
+        Binding("minus,-", "zoom(1)", "Zoom out", show=False),
         Binding("t", "now", "Now"),
     ]
 
     class CursorMoved(Message):
         pass
 
-    def __init__(self, gpus: list[GPUDevice], **kw) -> None:
+    def __init__(self, gpus: list[GPUDevice], card_width: int = DEFAULT_CARD_WIDTH,
+                 **kw) -> None:
         super().__init__(**kw)
         self.gpus = gpus
-        self.state = TimelineState()
-        self.state.jump_to(datetime.now())
+        self.state = TimelineState(card_width=card_width)
         self.axis = TimeAxis(self.state, id="time-axis")
         self.rows = [GPURow(g, self.state) for g in gpus]
-        self._data: tuple = ([], {}, None)
+        self.slots: list[Slot] = []  # displayed future columns, in order
+        self.show_end_slot = False
 
     def compose(self):
         yield self.axis
-        with Vertical(id="gpu-rows"):
+        with VerticalScroll(id="gpu-rows"):
             yield from self.rows
 
     def on_resize(self, event: events.Resize) -> None:
-        self.state.width = max(1, self.size.width - LABEL_WIDTH)
-        self.refresh_rows()
+        # rows sit in a scroll container: keep one cell for its scrollbar
+        self.state.width = max(1, self.size.width - LABEL_WIDTH - 1)
+        self.state.ensure_cursor_visible()
+        self._changed()
 
     def row_for_gpu(self, gpu_id: int) -> GPURow:
         return next(r for r in self.rows if r.gpu.id == gpu_id)
 
+    @property
+    def n_items(self) -> int:
+        return len(self.slots)
+
+    # data ------------------------------------------------------------------
     def update_data(
         self,
+        slots: list[Slot],
         assignments: list[Assignment],
         tasks: dict[str, Task],
-        ghost: Ghost | None = None,
+        now: datetime | None = None,
+        moving: str | None = None,
+        ghost_ok: bool = True,
+        ghost_note: str | None = None,
+        show_cursor: bool = False,
     ) -> None:
-        self._data = (assignments, tasks, ghost)
-        self.refresh_rows()
+        now = now or datetime.now()
+        st = self.state
+        st.now = now
+        self.slots = slots
+        st.cursor_col = min(st.cursor_col, len(slots))
+        w = st.card_width
 
-    def refresh_rows(self) -> None:
-        assignments, tasks, ghost = self._data
-        now = datetime.now()
-        self.axis.now = now
+        cards = []
+        for col, slot in enumerate(slots):
+            task = tasks.get(slot.task_id)
+            if slot.kind == "ghost":
+                bg = GHOST_OK if ghost_ok else GHOST_BAD
+                lines = card_lines(task, slot, w, now, None if ghost_ok else ghost_note)
+            else:
+                bg = task_color(slot.task_id)
+                lines = card_lines(task, slot, w, now)
+            cards.append(Card(col, slot.key, slot.task_id, slot.gpu_ids, lines, bg,
+                              kind=slot.kind, selected=show_cursor and col == st.cursor_col,
+                              dimmed=slot.key == moving))
+
+        past = []
+        for a in assignments:
+            if a.actual_start is None or a.state == AssignmentState.CANCELLED and not a.actual_end:
+                continue
+            start, end = a.display_interval(now)
+            end = min(end, now)
+            span = st.span(start, end)
+            if span is None:
+                continue
+            task = tasks.get(a.task_id)
+            if a.state == AssignmentState.RUNNING:
+                bg, fg = task_color(a.task_id), "#0b0f19"
+            elif a.state == AssignmentState.FAILED:
+                bg, fg = FAILED_COLOR, "#fecaca"
+            else:
+                bg, fg = HISTORY_COLOR, "#e5e7eb"
+            past.append(PastBlock(a.id, span[0], span[1], task.name if task else a.task_id,
+                                  bg, fg, a.display_gpu_ids))
+
+        self.axis.columns = dict(enumerate(slots))
         self.axis.refresh()
-        for row in self.rows:
-            on_row = [a for a in assignments if row.gpu.id in a.display_gpu_ids]
-            row.set_data(on_row, tasks, ghost, now)
+        end_col = len(slots) if show_cursor and st.cursor_col == len(slots) else None
+        ids = [r.gpu.id for r in self.rows]
+        for i, row in enumerate(self.rows):
+            row.set_data(
+                cards,
+                past,
+                ids[i - 1] if i > 0 else None,
+                ids[i + 1] if i + 1 < len(ids) else None,
+                end_col if row.gpu.id == st.cursor_gpu else None,
+            )
 
-    def assignment_under_cursor(self) -> Assignment | None:
-        if not self.rows:
-            return None
-        return self.row_for_gpu(self.state.cursor_gpu).assignment_at_column(self.state.cursor_x)
+    def slot_under_cursor(self) -> Slot | None:
+        c = self.state.cursor_col
+        return self.slots[c] if 0 <= c < len(self.slots) else None
 
-    def locate(self, screen_x: int, screen_y: int) -> tuple[int, datetime] | None:
-        """Screen coordinates -> (gpu id, snapped time), or None if outside the strip."""
+    def locate(self, screen_x: int, screen_y: int) -> tuple[int, Hit] | None:
+        """Screen coordinates -> (gpu id, hit in the strip), or None outside the rows."""
         for row in self.rows:
             r = row.region
-            if r.y <= screen_y < r.y + r.height:
-                col = row.column_at(screen_x)
-                if 0 <= col < self.state.width:
-                    return row.gpu.id, self.state.x_to_time(col)
-                return None
+            if r.height and r.y <= screen_y < r.y + r.height:
+                return row.gpu.id, self.state.hit(row.column_at(screen_x))
         return None
 
     # actions ---------------------------------------------------------------
     def _changed(self) -> None:
-        self.refresh_rows()
         self.post_message(self.CursorMoved())
 
     def action_cursor(self, delta: int) -> None:
-        self.state.move_cursor(delta)
+        self.state.move_cursor(delta, self.n_items)
         self._changed()
 
     def action_gpu(self, delta: int) -> None:
@@ -152,12 +236,12 @@ class GPUTimeline(Vertical, can_focus=True):
         ids = [g.id for g in self.gpus]
         idx = ids.index(self.state.cursor_gpu) if self.state.cursor_gpu in ids else 0
         self.state.cursor_gpu = ids[max(0, min(len(ids) - 1, idx + delta))]
+        self.call_after_refresh(self.query_one("#gpu-rows").scroll_to_widget,
+                                self.row_for_gpu(self.state.cursor_gpu), animate=False)
         self._changed()
 
-    def action_pan(self, direction: int) -> None:
-        step = max(1, self.state.width // 4)
-        self.state.pan(direction * step)
-        self.state.cursor_time += self.state.cell * direction * step
+    def action_pan(self, cells: int) -> None:
+        self.state.pan_past(cells * max(1, self.state.past_width // 3))
         self._changed()
 
     def action_zoom(self, step: int) -> None:
@@ -165,27 +249,36 @@ class GPUTimeline(Vertical, can_focus=True):
         self._changed()
 
     def action_now(self) -> None:
-        self.state.jump_to(datetime.now())
+        self.state.reset()
         self._changed()
 
-    def set_cursor(self, gpu_id: int, t: datetime) -> None:
+    def set_cursor(self, gpu_id: int, col: int | None = None) -> None:
         self.state.cursor_gpu = gpu_id
-        self.state.set_cursor_time(t)
+        if col is not None:
+            self.state.set_cursor_col(col, self.n_items)
         self._changed()
 
     def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        self.state.pan(2)
-        self.state.cursor_time += self.state.cell * 2
-        self._changed()
-        event.stop()
+        self._wheel(event, 1)
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        self.state.pan(-2)
-        self.state.cursor_time -= self.state.cell * 2
+        self._wheel(event, -1)
+
+    def _wheel(self, event, direction: int) -> None:
+        loc = self.locate(event.screen_x, event.screen_y)
+        if loc is None:
+            return  # let the rows container scroll vertically
+        _, hit = loc
+        if hit.zone == "past":
+            self.state.pan_past(-2 * direction)
+        else:
+            self.state.scroll_future(direction, self.n_items)
         self._changed()
         event.stop()
 
     def on_gpurow_hover(self, event: GPURow.Hover) -> None:
+        if event.hit.col is None:
+            return
         self.state.cursor_gpu = event.gpu_id
-        self.state.cursor_time = self.state.x_to_time(event.column)
+        self.state.cursor_col = max(0, min(self.n_items, event.hit.col))
         self._changed()
