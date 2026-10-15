@@ -1,15 +1,20 @@
-"""Command-line entry point: ``zgm`` or ``python -m zgm``."""
+"""Command-line entry point: ``zgm`` or ``python -m zgm``.
+
+``zgm [options]`` opens the TUI; ``zgm submit ...`` queues a task (see ``zgm submit -h``).
+"""
 
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .services.config_repo import DEFAULT_COMMAND_TEMPLATE
 from .storage.sqlite import SqliteStorage, default_db_path
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="zgm", description=__doc__)
+    p = argparse.ArgumentParser(prog="zgm", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--db", default=str(default_db_path()),
                    help="SQLite file for tasks/plans/history (default: %(default)s)")
     p.add_argument("--mock-gpus", type=int, default=None, metavar="N",
@@ -37,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["submit"]:
+        from .submit import main as submit_main
+
+        raise SystemExit(submit_main(argv[1:]))
     args = build_parser().parse_args(argv)
     runtime = None
     if args.runtime == "local":

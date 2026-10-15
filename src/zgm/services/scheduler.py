@@ -227,6 +227,26 @@ class AssignmentService:
         idx = min(idx, len(all_ids) - n)
         return tuple(all_ids[idx: idx + n])
 
+    def best_gpus(self, task: Task) -> tuple[int, ...]:
+        """The window of ``required_gpus`` adjacent GPUs where ``task``, queued
+        last, would start first. Unknown starts lose to known ones; among those,
+        the GPUs with the least queued and running work win, then the lowest ids."""
+        if not self.gpu_ids:
+            raise ValueError("no GPUs")
+        windows = {self.suggest_gpus(task, g) for g in self.gpu_ids}
+        load: dict[int, int] = {}
+        for a in [*self.running(), *self.planned()]:
+            for g in a.display_gpu_ids:
+                load[g] = load.get(g, 0) + 1
+
+        def score(gpus: tuple[int, ...]):
+            _, ghost = self.preview(task.id, gpus, None)
+            start = ghost.start if ghost else None
+            return (start is None, start or datetime.max, sum(load.get(g, 0) for g in gpus),
+                    gpus)
+
+        return min(windows, key=score)
+
     def _task_name(self, task_id: str) -> str:
         t = self.store.tasks.get(task_id)
         return t.name if t else task_id

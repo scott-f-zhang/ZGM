@@ -24,7 +24,19 @@ class TaskStore:
             a.id: a for a in self.storage.load_assignments()
         }
         self._listeners: list[Listener] = []
+        self._data_version = self.storage.data_version()
         self.refresh_estimates()
+
+    def sync(self) -> bool:
+        """Reload if another process (``zgm submit``) changed the database."""
+        version = self.storage.data_version()
+        if version == self._data_version:
+            return False
+        self._data_version = version
+        self.tasks = {t.id: t for t in self.storage.load_tasks()}
+        self.assignments = {a.id: a for a in self.storage.load_assignments()}
+        self.notify()
+        return True
 
     # estimates -------------------------------------------------------------
     def run_durations(self) -> dict[str, list[timedelta]]:

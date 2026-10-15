@@ -7,7 +7,8 @@ By default zgm only **plans**: an assignment is a planned slot, and moving it ne
 ```bash
 pip install -e '.[dev]'            # add [ray] for the Ray runtime
 zgm --demo --config-dir examples/configs
-zgm --config-dir examples/configs --runtime local   # T on a config, place it, then r
+zgm --config-dir examples/configs --runtime local   # runs the queue as GPUs free up
+zgm submit -g 2 -- train.py --lr 3e-4                # queue a task from your project dir
 # or: python -m zgm ...
 ```
 
@@ -136,6 +137,32 @@ Placeholders in `args`, `command` and `env`, substituted when the task starts:
 
 `examples/project/train.py` is a stand-in training script. The example configs' `run` blocks point at it, so `zgm --config-dir examples/configs --runtime local` runs end to end.
 
+## Submitting from the command line
+
+From your project directory, in the environment you train in:
+
+```bash
+zgm submit -g 2 -- train.py --lr 3e-4            # script + args
+zgm submit -- -m pkg.train --bs 64               # a module
+zgm submit -g 2 --cmd "torchrun --nproc_per_node={num_gpus} train.py"   # any shell command
+zgm submit --config configs/rn50_adamw.yaml      # a config, with its _scheduler_ settings
+```
+
+The task gets the same fields as in the TUI, filled in from where you are:
+
+- **Working dir**: the current directory (`-C DIR` to change it).
+- **Environment**: the active venv (`VIRTUAL_ENV`), else the active conda env (`CONDA_PREFIX`), else `python` on PATH. `--python PATH` or `--conda ENV` set it explicitly. The report says which one was used.
+- **What to run**: `script.py ...` and `-m module ...` run with that environment's Python. Anything else becomes a shell command. Put `--` before RUN when it starts with `-` or uses options zgm also has. Use `--cmd "..."` for pipes, `&&` or variables. Write `{num_gpus}` instead of `$ZGM_NUM_GPUS` there, or quote it, so your shell does not expand it at submit time.
+- `-e KEY=VALUE` (repeatable) adds environment variables, `-n NAME` names the task, and `-g N` sets the GPU count.
+
+Before queueing, zgm builds the process once, so a missing script, working dir, interpreter or conda env is reported right away (exit code 2) instead of when the task would start. `--no-check` skips this.
+
+**Placement.** By default the task goes to the end of the queue, on the GPUs where it would start first: zgm simulates the queue for every window of adjacent GPUs. A known start beats an unknown one; ties go to the GPUs with less queued work. `--gpu-ids 0,1` picks the GPUs yourself, `--first` puts the task at the front of the queue, and `--hold` only adds it to the waiting queue, for placing in the TUI.
+
+`--config FILE` takes the GPU count, name and `_scheduler_.run` block from the config. If you also give RUN, that runs instead, from the current directory, and can use `{config}` / `{path}`.
+
+A running zgm picks submitted tasks up within a couple of seconds: it reloads when another process writes to the database (SQLite `data_version`). With `--runtime local`, it then starts them as their GPUs free up. `zgm submit` and the TUI must use the same `--db` (the default is the same for both). Without NVML, both default to 4 mock GPUs; `ZGM_MOCK_GPUS` or `--mock-gpus` change that for both.
+
 ## Auto-start
 
 With a runtime (`--runtime local|mock|ray`), zgm works through the queue by itself. Every couple of seconds it starts each planned task that is ready, using the same rule that draws the timeline: none of the task's GPUs is running anything, and no task queued before it is waiting for any of them. So the queue starts in exactly the order you see, a later task never jumps ahead on a GPU that an earlier task is waiting for, and tasks on separate GPUs run side by side.
@@ -151,6 +178,7 @@ With a runtime (`--runtime local|mock|ray`), zgm works through the queue by itse
 ```
 widgets/ + screens/    Textual UI (TaskQueue, TaskCard, TaskDetails, GPUTimeline/GPURow, Config*)
 services/              TaskStore · AssignmentService · ConflictValidator · GPU discovery · ConfigRepository
+submit.py              zgm submit: CLI -> Task, environment detection, best GPUs
 services/launcher.py   LaunchSpec -> process: cwd, interpreter, conda env, CUDA_VISIBLE_DEVICES
 runtime/               Runtime protocol · LocalRuntime · MockRuntime · RayRuntime
 storage/sqlite.py      tasks · assignments · history

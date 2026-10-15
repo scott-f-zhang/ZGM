@@ -108,6 +108,10 @@ class SqliteStorage:
     def close(self) -> None:
         self.conn.close()
 
+    def data_version(self) -> int:
+        """Changes when another connection (e.g. ``zgm submit``) commits."""
+        return self.conn.execute("PRAGMA data_version").fetchone()[0]
+
     # tasks -----------------------------------------------------------------
     def save_task(self, t: Task) -> None:
         self.conn.execute(
