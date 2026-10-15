@@ -22,25 +22,19 @@ from .timeline_state import DEFAULT_CARD_WIDTH, Hit, TimelineState, wrap_center
 FAILED_COLOR = "#7f1d1d"
 
 
-def fmt_when(t: datetime, now: datetime) -> str:
-    return t.strftime("%H:%M") if t.date() == now.date() else t.strftime("%m-%d %H:%M")
-
-
 def card_lines(task: Task | None, slot: Slot, width: int, now: datetime,
                note: str | None = None) -> list[str]:
-    """Full task name (wrapped, centred) + times (+ GPUs for multi-GPU work)."""
+    """Full task name (wrapped, centred) + GPUs for multi-GPU work.
+
+    The queue zone deliberately shows no times: they are only estimates.
+    """
     inner = width - 2
     name = task.name if task else slot.task_id
     if slot.kind == "running":
         name = "▶ " + name
     lines = wrap_center(name, inner)
     if slot.kind == "running":
-        when = f"ends ~{fmt_when(slot.end, now)}"
-    else:
-        when = f"{fmt_when(slot.start, now)}→{slot.end:%H:%M}"
-        if len(when) > inner:
-            when = f"{slot.start:%H:%M}→{slot.end:%H:%M}"
-    lines.append(when.center(inner))
+        lines.append("running".center(inner))
     if len(slot.gpu_ids) > 1:
         lines.append(f"GPU {','.join(map(str, slot.gpu_ids))}".center(inner))
     if note:
@@ -87,11 +81,7 @@ class TimeAxis(Widget):
             x = st.col_x(col)
             if x is None or x + w > width:
                 continue
-            if y == 0:
-                text = (("~" if slot.kind != "running" else "▶")
-                        + fmt_when(slot.start, st.now)).center(w)
-            else:
-                text = f" #{col + 1} ".center(w, "─")
+            text = f"#{col + 1}".center(w) if y == 0 else "─" * w
             for i, ch in enumerate(text):
                 line[x + i] = ch
         segs.append(Segment("".join(line[:st.divider_x]), Style(color="#9ca3af")))
@@ -174,9 +164,11 @@ class GPUTimeline(Vertical, can_focus=True):
             else:
                 bg = task_color(slot.task_id)
                 lines = card_lines(task, slot, w, now)
+            name = task.name if task else slot.task_id
+            title = len(wrap_center(("▶ " if slot.kind == "running" else "") + name, w - 2))
             cards.append(Card(col, slot.key, slot.task_id, slot.gpu_ids, lines, bg,
                               kind=slot.kind, selected=show_cursor and col == st.cursor_col,
-                              dimmed=slot.key == moving))
+                              dimmed=slot.key == moving, title_lines=title))
 
         past = []
         for a in assignments:

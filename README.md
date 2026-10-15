@@ -29,7 +29,7 @@ Without NVIDIA drivers or NVML, the app falls back to 4 mock GPUs. You can force
 The timeline is split at **now** (red `┃`):
 
 - **Left of now: history, drawn to scale.** These tasks really ran, so their blocks use actual start and end times. Use `h`/`l` to pan back in time and `+`/`-` to zoom; the mouse wheel does the same over this zone.
-- **Right of now: the queue, as fixed-width cards.** Each planned assignment gets one column, in queue order. The card shows the full task name (centred, wrapped if needed) and its estimated `start→end`. A multi-GPU task takes the same column on each of its GPU rows. The card width is set by `--card-width` (default 24).
+- **Right of now: the queue, as fixed-width cards.** Each planned assignment gets one column, in queue order. The card shows only the full task name (centred, wrapped if needed), plus the GPU ids for multi-GPU tasks — no times, since they are only estimates (the Task Details pane still lists the estimated start/end). A multi-GPU task takes the same column on each of its GPU rows. The card width is set by `--card-width` (default 24).
 
 Planned work is an **ordered queue**: you choose the GPUs and the position, and the start time is derived. A task starts as soon as all of its GPUs are free, after the running work and the queued work ahead of it. Placements therefore never overlap. Moving, inserting or removing a card re-times everything after it.
 
@@ -48,7 +48,7 @@ Planned work is an **ordered queue**: you choose the GPUs and the position, and 
 
 Mouse: drag a task card onto a GPU row. Dropping on the left half of a queued card inserts before it; dropping on the right half inserts after it. Drag a queued card to reorder it or move it to another GPU. A drop on the history zone cancels the drag. A placement that can't be made (wrong GPU count, task already running) shows a red ghost and is refused.
 
-The axis header shows each column's estimated start (`~21:10`, or `▶` for running work) and how many columns are scrolled out of view (`◀2 3▶`).
+The axis header numbers the queue positions (`#1`, `#2`, …) and shows how many columns are scrolled out of view (`◀2 3▶`).
 
 ### Configs: YAML inheritance
 
