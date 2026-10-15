@@ -1,0 +1,6 @@
+_base_: resnet50_base.yaml
+optimizer:
+  _delete_: true   # replace the SGD block entirely
+  type: adamw
+  lr: 3.0e-4
+  weight_decay: 0.05
