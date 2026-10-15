@@ -5,9 +5,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from gpu_scheduler.models import Assignment, Task
-from gpu_scheduler.runtime.base import RunState
-from gpu_scheduler.runtime.ray_adapter import RayRuntime
+from zgm.models import Assignment, Task
+from zgm.runtime.base import RunState
+from zgm.runtime.ray_adapter import RayRuntime
 
 ray = pytest.importorskip("ray")
 pytestmark = pytest.mark.ray

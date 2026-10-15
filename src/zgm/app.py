@@ -1,4 +1,4 @@
-"""GPUSchedulerApp: wires services to the two views (Schedule, Configs)."""
+"""ZGMApp: wires services to the two views (Schedule, Configs)."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from .storage.sqlite import SqliteStorage
 from .widgets.timeline_state import DEFAULT_CARD_WIDTH, MIN_CARD_WIDTH
 
 
-class GPUSchedulerApp(App):
-    TITLE = "gpu-scheduler"
+class ZGMApp(App):
+    TITLE = "ZGM"
     CSS_PATH = "styles/app.tcss"
     MODES = {"schedule": ScheduleScreen, "configs": ConfigScreen}
     DEFAULT_MODE = "schedule"

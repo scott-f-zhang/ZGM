@@ -82,9 +82,9 @@ class MockGPUProvider:
 def make_provider(mock_count: int | None = None) -> NVMLProvider | MockGPUProvider:
     """NVML if available and not overridden; otherwise mock GPUs.
 
-    ``mock_count`` (or env GPU_SCHEDULER_MOCK_GPUS) forces the mock provider.
+    ``mock_count`` (or env ZGM_MOCK_GPUS) forces the mock provider.
     """
-    env = os.environ.get("GPU_SCHEDULER_MOCK_GPUS")
+    env = os.environ.get("ZGM_MOCK_GPUS")
     if mock_count is None and env:
         mock_count = int(env)
     if mock_count is not None:

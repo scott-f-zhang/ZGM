@@ -4,10 +4,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from gpu_scheduler.models import Task
-from gpu_scheduler.services.scheduler import AssignmentService
-from gpu_scheduler.services.task_store import TaskStore, add_completed_run
-from gpu_scheduler.storage.sqlite import SqliteStorage
+from zgm.models import Task
+from zgm.services.scheduler import AssignmentService
+from zgm.services.task_store import TaskStore, add_completed_run
+from zgm.storage.sqlite import SqliteStorage
 
 T0 = datetime(2030, 1, 1, 9, 0)
 

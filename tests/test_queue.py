@@ -5,9 +5,9 @@ from datetime import timedelta
 import pytest
 
 from conftest import T0, make_task, planned_count
-from gpu_scheduler.models import Task, TaskStatus, format_duration, parse_duration
-from gpu_scheduler.services.task_store import TaskStore, seed_demo
-from gpu_scheduler.storage.sqlite import SqliteStorage
+from zgm.models import Task, TaskStatus, format_duration, parse_duration
+from zgm.services.task_store import TaskStore, seed_demo
+from zgm.storage.sqlite import SqliteStorage
 
 
 def test_add_remove_round_trip(tmp_path):
@@ -113,20 +113,20 @@ def test_migrates_v1_database(tmp_path):
     conn.commit()
     conn.close()
 
-    from gpu_scheduler.services.scheduler import AssignmentService
+    from zgm.services.scheduler import AssignmentService
 
     store = TaskStore(SqliteStorage(db))
     svc = AssignmentService(store, range(4))
     assert [a.task_id for a in svc.planned()] == ["early", "late"]
     assert [a.seq for a in svc.planned()] == [0, 1]
-    from gpu_scheduler.storage.sqlite import SCHEMA_VERSION
+    from zgm.storage.sqlite import SCHEMA_VERSION
 
     assert store.storage.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert store.tasks["early"].fingerprint.startswith("cmd:")  # derived for old rows
 
 
 def test_estimate_is_median_of_matching_runs(store):
-    from gpu_scheduler.services.task_store import add_completed_run
+    from zgm.services.task_store import add_completed_run
 
     t = make_task(store, "job", hours=None)
     assert t.estimated_duration is None and t.estimate_runs == 0
@@ -145,7 +145,7 @@ def test_estimate_is_median_of_matching_runs(store):
 
 
 def test_cancelled_or_failed_runs_do_not_count(store):
-    from gpu_scheduler.models import Assignment, AssignmentState
+    from zgm.models import Assignment, AssignmentState
 
     t = make_task(store, "job", hours=None)
     for state in (AssignmentState.CANCELLED, AssignmentState.FAILED):
@@ -179,7 +179,7 @@ def test_migrates_v2_not_null_columns(tmp_path):
     t = store.tasks["t1"]
     t.estimated_duration = None
     store.update_task(t)  # nullable now
-    from gpu_scheduler.models import Assignment
+    from zgm.models import Assignment
 
     store.save_assignment(Assignment("t1", (0,), None, None), None)  # unknown times persist
     assert TaskStore(SqliteStorage(db)).assignments

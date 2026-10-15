@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from conftest import T0
-from gpu_scheduler.models import Assignment, AssignmentState
-from gpu_scheduler.widgets.timeline_state import (
+from zgm.models import Assignment, AssignmentState
+from zgm.widgets.timeline_state import (
     MIN_CARD_WIDTH, TimelineState, ceil_time, floor_time, wrap_center,
 )
 

@@ -1,4 +1,4 @@
-# gpu-scheduler
+# ZGM
 
 A btop-style terminal UI for planning GPU work on one machine. Task cards sit at the top, details in the middle, and a per-GPU Gantt timeline at the bottom. You place tasks on GPUs and time slots with the keyboard or the mouse. A second view manages experiment YAML configs, which can inherit from each other like classes.
 
@@ -6,15 +6,15 @@ Phase 1 is **planning only**: an assignment is a planned slot, and moving it nev
 
 ```bash
 pip install -e '.[dev]'            # add [ray] for the Ray runtime
-gpu-scheduler --demo --config-dir examples/configs
-# or: python -m gpu_scheduler ...
+zgm --demo --config-dir examples/configs
+# or: python -m zgm ...
 ```
 
-Without NVIDIA drivers or NVML, the app falls back to 4 mock GPUs. You can force a count with `--mock-gpus N` or by setting `GPU_SCHEDULER_MOCK_GPUS=N`.
+Without NVIDIA drivers or NVML, the app falls back to 4 mock GPUs. You can force a count with `--mock-gpus N` or by setting `ZGM_MOCK_GPUS=N`.
 
 | flag | meaning |
 |---|---|
-| `--db PATH` | SQLite file for tasks, plans and history (default `~/.local/share/gpu-scheduler/state.db`) |
+| `--db PATH` | SQLite file for tasks, plans and history (default `~/.local/share/zgm/state.db`) |
 | `--config-dir DIR` | experiment YAML configs (default `./configs`) |
 | `--command-template T` | command for tasks made from a config; `{path}` and `{name}` are substituted |
 | `--demo` | seed example tasks into an empty database |

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from gpu_scheduler.models import Origin
-from gpu_scheduler.services import config_loader as cl
-from gpu_scheduler.services.config_repo import ConfigRepository
+from zgm.models import Origin
+from zgm.services import config_loader as cl
+from zgm.services.config_repo import ConfigRepository
 
 
 def write(d: Path, name: str, body: str) -> Path:
@@ -118,8 +118,8 @@ def test_editing_inherited_key_writes_child_only(cfg):
     # unsaved edits already flow down to descendants
     assert repo.get("grandchild").resolved["optimizer"]["momentum"] == 0.95
     repo.save(child)
-    assert "momentum: 0.95" in (cfg / "child.yaml").read_text()
-    assert "momentum: 0.9\n" in (cfg / "base.yaml").read_text()
+    assert "momentum: 0.95" in (cfg / "child.yaml").read_text(encoding="utf-8")
+    assert "momentum: 0.9\n" in (cfg / "base.yaml").read_text(encoding="utf-8")
     assert repo.get("base").resolved["optimizer"]["momentum"] == 0.9
 
 
@@ -137,7 +137,7 @@ def test_derive_writes_only_diff_and_tracks_parent(cfg):
     repo = ConfigRepository(cfg)
     base = repo.get("base")
     kid = repo.derive(base, "base_lr3e-4", {"optimizer.lr": 3e-4})
-    text = (cfg / "base_lr3e-4.yaml").read_text()
+    text = (cfg / "base_lr3e-4.yaml").read_text(encoding="utf-8")
     assert text.startswith("_base_: base.yaml")
     assert "momentum" not in text and "arch" not in text
     assert kid.resolved["optimizer"]["lr"] == 3e-4
@@ -160,7 +160,7 @@ def test_save_preserves_comments(cfg):
     base = repo.get("base")
     repo.set_value(base, "optimizer.lr", 0.2)
     repo.save(base)
-    text = (cfg / "base.yaml").read_text()
+    text = (cfg / "base.yaml").read_text(encoding="utf-8")
     assert "# base recipe" in text
     assert "lr: 0.2  # tuned for bs 256" in text
 
@@ -224,7 +224,7 @@ def test_rename_updates_children(cfg):
     new, children = repo.rename(repo.get("base"), "resnet_base")
     assert new.name == "resnet_base.yaml" and not (cfg / "base.yaml").exists()
     assert children == ["child"]
-    assert "_base_: resnet_base.yaml" in (cfg / "child.yaml").read_text()
+    assert "_base_: resnet_base.yaml" in (cfg / "child.yaml").read_text(encoding="utf-8")
     gc = repo.get("grandchild")
     assert gc.error is None and gc.resolved["model"]["arch"] == "resnet50"
     with pytest.raises(FileExistsError):
