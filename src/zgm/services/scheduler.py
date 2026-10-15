@@ -103,6 +103,25 @@ class AssignmentService:
             key=lambda a: a.actual_start or a.planned_start,
         )
 
+    def busy_gpus(self) -> set[int]:
+        return {g for a in self.running() for g in a.display_gpu_ids}
+
+    def ready_to_start(self) -> list[Assignment]:
+        """Planned assignments that may start now, in queue order.
+
+        The same rule that derives planned start times: an assignment starts when
+        none of its GPUs runs anything and no assignment queued before it waits
+        for any of them. Assignments returned together never share a GPU.
+        """
+        claimed = self.busy_gpus()
+        ready = []
+        for a in self.planned():
+            gpus = set(a.gpu_ids)
+            if a.task_id in self.store.tasks and not gpus & claimed:
+                ready.append(a)
+            claimed |= gpus
+        return ready
+
     def _duration(self, task_id: str):
         task = self.store.tasks.get(task_id)
         return task.estimated_duration if task else None

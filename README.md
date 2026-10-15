@@ -2,7 +2,7 @@
 
 A btop-style terminal UI for planning GPU work on one machine. Task cards sit at the top, details in the middle, and a per-GPU Gantt timeline at the bottom. You place tasks on GPUs and time slots with the keyboard or the mouse. A second view manages experiment YAML configs, which can inherit from each other like classes.
 
-By default zgm only **plans**: an assignment is a planned slot, and moving it never starts or kills a process. With `--runtime local`, the `r` key starts the task under the cursor as a child process on its planned GPUs (see [Running your code](#running-your-code)). Execution goes through a `Runtime` interface; local, mock and Ray backends are included.
+By default zgm only **plans**: an assignment is a planned slot, and moving it never starts or kills a process. With `--runtime local`, zgm also **runs** the queue: each task starts as a child process on its planned GPUs as soon as they are free (see [Running your code](#running-your-code) and [Auto-start](#auto-start)). Execution goes through a `Runtime` interface; local, mock and Ray backends are included.
 
 ```bash
 pip install -e '.[dev]'            # add [ray] for the Ray runtime
@@ -19,7 +19,8 @@ Without NVIDIA drivers or NVML, the app falls back to 4 mock GPUs. You can force
 | `--config-dir DIR` | experiment YAML configs (default `./configs`) |
 | `--command-template T` | shell command for tasks made from a config that has no `_scheduler_.run` block; `{path}` and `{name}` are substituted |
 | `--demo` | seed example tasks into an empty database |
-| `--runtime none\|local\|mock\|ray` | enables the `r` key to execute a planned task (`local`: child processes on this machine) |
+| `--runtime none\|local\|mock\|ray` | execute planned tasks: `local` runs child processes on this machine; queued tasks auto-start as GPUs free up |
+| `--no-autostart` | with a runtime, start paused: tasks only start with `r` until `p` turns auto-start on |
 | `--log-dir DIR` | where the local runtime writes task logs (default `logs/` next to the database) |
 
 ## Views (btop-style)
@@ -51,6 +52,8 @@ Planned work is an **ordered queue**: you choose the GPUs and the position, and 
 | `e` | edit/rename the task (queue card, or the card under the timeline cursor). A running task can only be renamed |
 | `s` | stop the running task under the cursor. You are asked whether to put it back in the queue or delete it |
 | `n` / `d` | new task / delete a waiting task |
+| `p` | with a runtime: pause / resume auto-start |
+| `r` | with a runtime: start the selected planned task now, ahead of the queue (its GPUs must be free) |
 
 Mouse: drag a task card onto a GPU row. Dropping on the left half of a queued card inserts before it; dropping on the right half inserts after it. Drag a queued card to reorder it or move it to another GPU. A drop on the history zone cancels the drag. A placement that can't be made (wrong GPU count, task already running) shows a red ghost and is refused.
 
@@ -132,6 +135,16 @@ Placeholders in `args`, `command` and `env`, substituted when the task starts:
 **Environments.** With a Python path, its directory goes first on PATH, so tools like `torchrun` come from the same environment. With conda, zgm runs `conda run` once per env to capture the activated variables (activation hooks included) and caches them. The process then starts directly with those variables: no wrapper process, and output is live. zgm finds conda through `CONDA_EXE`, PATH, or the usual install folders (`~/anaconda3`, `~/miniconda3`, `~/miniforge3`, `~/mambaforge`).
 
 `examples/project/train.py` is a stand-in training script. The example configs' `run` blocks point at it, so `zgm --config-dir examples/configs --runtime local` runs end to end.
+
+## Auto-start
+
+With a runtime (`--runtime local|mock|ray`), zgm works through the queue by itself. Every couple of seconds it starts each planned task that is ready, using the same rule that draws the timeline: none of the task's GPUs is running anything, and no task queued before it is waiting for any of them. So the queue starts in exactly the order you see, a later task never jumps ahead on a GPU that an earlier task is waiting for, and tasks on separate GPUs run side by side.
+
+- The status line shows **AUTO ▶** or **PAUSED ‖**. `p` toggles it; `--no-autostart` starts zgm paused.
+- `r` starts the selected task now, ahead of its place in the queue. It is refused if one of its GPUs is busy.
+- A task that cannot start (missing working dir, script, python or conda env) goes back to the waiting queue as *failed* with the reason, and the queue moves on.
+- Nothing starts while you are placing or dragging a card.
+- zgm only tracks processes it started in this session. A task still marked running from an earlier session is reported at startup; stop it with `s` to free its GPUs. GPUs used by programs outside zgm are not detected.
 
 ## Architecture
 
