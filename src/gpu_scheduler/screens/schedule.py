@@ -15,7 +15,7 @@ from ..models import AssignmentState, Task, TaskStatus
 from ..services.scheduler import Result, Slot
 from ..widgets.dialogs import new_task_form
 from ..widgets.gpu_row import GPURow
-from ..widgets.gpu_timeline import GPUTimeline, fmt_when
+from ..widgets.gpu_timeline import GPUTimeline
 from ..widgets.task_card import TaskCard
 from ..widgets.task_details import TaskDetails
 from ..widgets.task_queue import TaskQueue
@@ -156,7 +156,6 @@ class ScheduleScreen(Screen):
         details.show(task, self.store.assignments_for_task(task.id) if task else [], note)
 
     def refresh_status(self) -> None:
-        st = self.timeline.state
         msg = Text()
         p = self.preview
         if self.placement and p:
@@ -165,8 +164,6 @@ class ScheduleScreen(Screen):
             msg.append(" PLACING ", style="bold #0b0f19 on #22c55e" if ok else "bold white on #ef4444")
             gpus = ",".join(map(str, p.gpu_ids))
             msg.append(f" {task.name if task else '?'} → GPU {gpus}, queue #{p.position + 1}")
-            if p.ghost and ok:
-                msg.append(f", starts ~{fmt_when(p.ghost.start, st.now)}")
             msg.append("   ←/→ position  ↑/↓ GPU  Enter confirm  Esc cancel", style="dim")
             if not ok:
                 msg.append(f"   ✗ {p.result.message}", style="red")
@@ -256,11 +253,9 @@ class ScheduleScreen(Screen):
         self.last_error = None
         a = out.assignment
         task = self.store.tasks[p.task_id]
-        self.notify(
-            f"{task.name} → GPU {','.join(map(str, a.gpu_ids))}, "
-            f"starts ~{fmt_when(a.planned_start, datetime.now())}",
-            title="Planned",
-        )
+        pos = next(i for i, x in enumerate(self.svc.planned()) if x.id == a.id)
+        self.notify(f"{task.name} → GPU {','.join(map(str, a.gpu_ids))}, queue #{pos + 1}",
+                    title="Planned")
         self.refresh_all()
         return True
 

@@ -139,15 +139,37 @@ async def test_full_name_centred_in_fixed_width_card(config_dir):
         x = LABEL_WIDTH + tl.state.col_x(0)
         w = tl.state.card_width
         lines = [line[x: x + w] for line in strip_text(row).splitlines()]
-        text = "".join(line.strip() for line in lines if line.strip() and "→" not in line)
+        text = "".join(line.strip() for line in lines if line.strip())
         assert text == long
         assert row.size.height >= 4  # grew to fit the wrapped name
         # every name line is centred inside the card
         for line in lines:
-            if line.strip() and "→" not in line:
+            if line.strip():
                 left = len(line) - len(line.lstrip())
                 right = len(line) - len(line.rstrip())
                 assert abs(left - right) <= 1
+
+
+async def test_queue_zone_shows_no_times(config_dir):
+    import re
+
+    a, b = task("alpha"), task("beta", gpus=2)
+    app = make_app(config_dir, [a, b])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(a.id, [0])
+        app.assignment_service.assign(b.id, [1, 2])
+        await pilot.pause()
+        tl = app.screen.timeline
+        x0 = LABEL_WIDTH + tl.state.future_x0
+        clock = re.compile(r"\d{1,2}:\d{2}")
+        queue_text = [line[x0:] for g in range(4)
+                      for line in strip_text(app.screen.query_one(f"#gpu-row-{g}", GPURow)).splitlines()]
+        axis = [tl.axis.render_line(y).text for y in range(2)]
+        queue_text += [line[x0:] for line in axis]
+        assert not any(clock.search(t) or "→" in t for t in queue_text)
+        assert "#1" in axis[0] and "#2" in axis[0]
+        assert clock.search(axis[0][LABEL_WIDTH: x0])  # history keeps its clock
 
 
 async def test_multi_gpu_card_aligns_across_rows(config_dir):

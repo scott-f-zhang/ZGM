@@ -45,6 +45,7 @@ class Card:
     kind: str = "planned"  # running | planned | ghost
     selected: bool = False
     dimmed: bool = False  # original of a block that is being moved
+    title_lines: int = 1  # leading lines that hold the task name (drawn bold)
 
 
 @dataclass
@@ -213,7 +214,7 @@ class GPURow(Widget):
             top = (body - len(card.lines)) // 2
             if top <= y < top + len(card.lines):
                 line = card.lines[y - top]
-                bold = y - top < len(card.lines) - 1 and card.kind != "running"
+                bold = y - top < card.title_lines
                 for i, ch in enumerate(line[:w]):
                     if ch != " ":
                         cells[x + i] = (ch, style + Style(bold=bold or card.kind == "ghost"))
