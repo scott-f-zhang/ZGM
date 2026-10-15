@@ -26,9 +26,11 @@ Without NVIDIA drivers or NVML, the app falls back to 4 mock GPUs. You can force
 
 ### Schedule
 
+The **task queue** at the top holds only tasks that are waiting: new ones, and ones that were stopped, failed or unassigned. Once a task is planned or running it lives on the timeline and leaves the queue; unassigning or stopping it with "put back" returns it.
+
 The timeline is split at **now** (red `┃`):
 
-- **Left of now: history, drawn to scale.** These tasks really ran, so their blocks use actual start and end times. Use `h`/`l` to pan back in time and `+`/`-` to zoom; the mouse wheel does the same over this zone.
+- **Left of now: history, drawn to scale.** These tasks really ran, so their blocks use actual start and end times (grey = finished, brown = stopped, red = failed). Use `h`/`l` to pan back in time and `+`/`-` to zoom; the mouse wheel does the same over this zone.
 - **Right of now: the queue, as fixed-width cards.** Each planned assignment gets one column, in queue order. The card shows only the full task name (centred, wrapped if needed), plus the GPU ids for multi-GPU tasks — no times, since they are only estimates (the Task Details pane still lists the estimated start/end). A multi-GPU task takes the same column on each of its GPU rows. The card width is set by `--card-width` (default 24).
 
 Planned work is an **ordered queue**: you choose the GPUs and the position, and the start time is derived. A task starts as soon as all of its GPUs are free, after the running work and the queued work ahead of it. Placements therefore never overlap. Moving, inserting or removing a card re-times everything after it.
@@ -44,11 +46,22 @@ Planned work is an **ordered queue**: you choose the GPUs and the position, and 
 | `[` / `]` (or `Shift+←/→`) | move the selected card one place earlier / later |
 | `u` / `Del` | unassign |
 | `t` | reset the view to now |
-| `n` / `d` | new task / delete task |
+| `e` | edit/rename the task (queue card, or the card under the timeline cursor). A running task can only be renamed |
+| `s` | stop the running task under the cursor. You are asked whether to put it back in the queue or delete it |
+| `n` / `d` | new task / delete a waiting task |
 
 Mouse: drag a task card onto a GPU row. Dropping on the left half of a queued card inserts before it; dropping on the right half inserts after it. Drag a queued card to reorder it or move it to another GPU. A drop on the history zone cancels the drag. A placement that can't be made (wrong GPU count, task already running) shows a red ghost and is refused.
 
 The axis header numbers the queue positions (`#1`, `#2`, …) and shows how many columns are scrolled out of view (`◀2 3▶`).
+
+### Estimates come only from run history
+
+You never type in how long a task takes. A task's estimate is the **median duration of earlier completed runs of the same workload**:
+
+- a task made from a config matches on the config's **resolved parameters** (everything except `_scheduler_`) plus its GPU count. The name doesn't matter, and two differently named configs with identical parameters share history;
+- a plain-command task matches on its command plus its GPU count.
+
+With no matching run, the task shows **"no data"** and its end is unknown. Anything queued behind it on the same GPUs then has an unknown start too. Stopped and failed runs are kept in history but are not used for estimates. The Configs view shows the estimate for the selected config's exact parameters in the table title.
 
 ### Configs: YAML inheritance
 
@@ -65,7 +78,7 @@ optimizer:
 
 - Mappings merge recursively. Scalars and lists are replaced.
 - `_delete_: true` inside a mapping replaces the inherited subtree instead of merging into it.
-- `_scheduler_: {gpus, estimated_duration, name}` sets what a task created from the config needs.
+- `_scheduler_: {gpus, name}` sets the GPU count and task name for a task created from the config. There is deliberately no duration field (see above).
 - Cycles, missing bases and YAML errors are flagged in the tree. They don't crash the app.
 
 | key | action |
@@ -75,6 +88,7 @@ optimizer:
 | `n` | add a key (`optimizer.betas`, YAML value) |
 | `D` | derive a child config. It writes `_base_` plus any `key=value; …` overrides, so later changes to the parent flow through |
 | `Ctrl+S` / `R` | save edited files (comments and order are kept) / reload from disk |
+| `r` | rename the config file; children's `_base_` and tasks created from it are updated to the new name |
 | `T` | create a task from the config and add it to the queue |
 | `v` | toggle the bottom pane between the diff vs the parent and the raw YAML |
 | `/` | filter keys |

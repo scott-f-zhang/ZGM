@@ -6,7 +6,7 @@ import pytest
 
 from gpu_scheduler.models import Task
 from gpu_scheduler.services.scheduler import AssignmentService
-from gpu_scheduler.services.task_store import TaskStore
+from gpu_scheduler.services.task_store import TaskStore, add_completed_run
 from gpu_scheduler.storage.sqlite import SqliteStorage
 
 T0 = datetime(2030, 1, 1, 9, 0)
@@ -22,8 +22,17 @@ def svc(store: TaskStore) -> AssignmentService:
     return AssignmentService(store, [0, 1, 2, 3])
 
 
-def make_task(store: TaskStore, name: str = "t", gpus: int = 1, hours: float = 1) -> Task:
-    return store.add_task(
-        Task(name=name, command=f"echo {name}", required_gpus=gpus,
-             estimated_duration=timedelta(hours=hours))
-    )
+def make_task(store: TaskStore, name: str = "t", gpus: int = 1,
+              hours: float | None = 1) -> Task:
+    """A pending task. ``hours`` records one past completed run of the same
+    workload (long ago, on GPU 0), so the task's estimate is ``hours``;
+    ``None`` leaves it with no history."""
+    task = Task(name=name, command=f"echo {name}", required_gpus=gpus)
+    if hours is not None:
+        add_completed_run(store, task, tuple(range(gpus)), T0 - timedelta(days=30),
+                          timedelta(hours=hours), name=f"{name} (past run)")
+    return store.add_task(task)
+
+
+def planned_count(store: TaskStore) -> int:
+    return sum(1 for a in store.assignments.values() if a.is_active)

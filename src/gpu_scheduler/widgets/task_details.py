@@ -8,7 +8,7 @@ from rich.table import Table
 from rich.text import Text
 from textual.widgets import Static
 
-from ..models import Assignment, Task, format_duration
+from ..models import Assignment, AssignmentState, Task, format_estimate
 from .palette import task_color
 from .task_card import STATUS_STYLE
 
@@ -46,7 +46,8 @@ class TaskDetails(Static):
             "GPUs",
             str(task.required_gpus),
             "Estimate",
-            format_duration(task.estimated_duration),
+            Text(format_estimate(task, long=True),
+                 style="" if task.estimated_duration else "dim italic"),
         )
         grid.add_row("Command", Text(task.command, overflow="fold"), "ID", task.id)
         if task.config_path:
@@ -56,16 +57,22 @@ class TaskDetails(Static):
         hist = [a for a in (assignments or []) if not a.is_active]
         if active:
             a = active[0]
+            if a.state == AssignmentState.RUNNING:
+                when = f"started {_fmt(a.actual_start)}, " + (
+                    f"ends ~{_fmt(a.planned_end)}" if a.planned_end else "end unknown")
+            elif a.planned_start is None:
+                when = "start unknown (work ahead of it has no run history)"
+            else:
+                when = f"~{_fmt(a.planned_start)} → " + (
+                    f"~{_fmt(a.planned_end)}" if a.planned_end else "end unknown")
             grid.add_row(
-                "Planned" if not a.actual_start else "Expected",
-                f"~{_fmt(a.planned_start)} → ~{_fmt(a.planned_end)} (estimate)",
+                "Running" if a.state == AssignmentState.RUNNING else "Planned",
+                when,
                 "GPU pref / actual",
                 f"{_gpus(a.preferred_gpu_ids)} / {_gpus(a.actual_gpu_ids)}",
             )
-            if a.actual_start:
-                grid.add_row("Started", _fmt(a.actual_start), "", "")
         else:
-            grid.add_row("Planned", Text("not on the timeline — press a to place", style="dim"),
+            grid.add_row("Planned", Text("waiting in the queue — press a to place it", style="dim"),
                          "", "")
         for a in hist[-2:]:
             grid.add_row(

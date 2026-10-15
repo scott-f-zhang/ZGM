@@ -34,8 +34,8 @@ ACTIVE_STATES = {AssignmentState.PLANNED, AssignmentState.RUNNING}
 class Assignment:
     task_id: str
     gpu_ids: tuple[int, ...]
-    planned_start: datetime
-    planned_end: datetime
+    planned_start: datetime | None  # None: unknown (no run history to estimate from)
+    planned_end: datetime | None
     id: str = field(default_factory=new_id)
     actual_start: datetime | None = None
     actual_end: datetime | None = None
@@ -48,7 +48,8 @@ class Assignment:
         self.gpu_ids = tuple(sorted(self.gpu_ids))
         if not self.preferred_gpu_ids:
             self.preferred_gpu_ids = self.gpu_ids
-        if self.planned_end <= self.planned_start:
+        if (self.planned_start is not None and self.planned_end is not None
+                and self.planned_end <= self.planned_start):
             raise ValueError("planned_end must be after planned_start")
 
     @property
@@ -63,19 +64,39 @@ class Assignment:
     def display_gpu_ids(self) -> tuple[int, ...]:
         return tuple(self.actual_gpu_ids) if self.actual_gpu_ids else self.gpu_ids
 
-    def display_interval(self, now: datetime) -> tuple[datetime, datetime]:
-        """Interval to draw: real times when known, otherwise the plan."""
+    @property
+    def expected_duration(self):
+        if self.planned_start is None or self.planned_end is None:
+            return None
+        return self.planned_end - self.planned_start
+
+    def expected_end(self, now: datetime) -> datetime | None:
+        """When running/planned work should finish, or None if unknown."""
+        if self.actual_end is not None:
+            return self.actual_end
+        if self.actual_start is not None:
+            dur = self.expected_duration
+            return max(now, self.actual_start + dur) if dur is not None else None
+        return self.planned_end
+
+    def display_interval(self, now: datetime) -> tuple[datetime | None, datetime | None]:
+        """Interval to draw: real times when known, otherwise the plan.
+
+        Running work with no estimate is drawn up to ``now``.
+        """
         if self.actual_start is not None:
             if self.actual_end is not None:
                 return self.actual_start, self.actual_end
-            expected = self.actual_start + (self.planned_end - self.planned_start)
-            return self.actual_start, max(now, expected)
+            return self.actual_start, self.expected_end(now) or now
         return self.planned_start, self.planned_end
 
     def overlaps(self, other: "Assignment", now: datetime | None = None) -> bool:
+        """True if both intervals are known and share time on a common GPU."""
         now = now or datetime.now()
         if not set(self.gpu_ids) & set(other.gpu_ids):
             return False
         a0, a1 = self.display_interval(now)
         b0, b1 = other.display_interval(now)
+        if None in (a0, a1, b0, b1):
+            return False
         return a0 < b1 and b0 < a1

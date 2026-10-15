@@ -1,7 +1,6 @@
 # Base ImageNet recipe for ResNet-50
 _scheduler_:
   gpus: 1
-  estimated_duration: 3h
 
 model:
   arch: resnet50

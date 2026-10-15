@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -21,23 +23,56 @@ def new_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
+def _digest(payload: object) -> str:
+    raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def command_fingerprint(command: str, gpus: int) -> str:
+    """Identity of a plain-command task's workload: the command and its GPU count."""
+    return "cmd:" + _digest({"command": " ".join(command.split()), "gpus": gpus})
+
+
+def config_fingerprint(params: dict, gpus: int) -> str:
+    """Identity of a config-driven workload: resolved parameters and GPU count."""
+    return "cfg:" + _digest({"params": params, "gpus": gpus})
+
+
 @dataclass
 class Task:
+    """A unit of work. ``estimated_duration`` is never typed in by the user: it
+    is derived from past completed runs with the same ``fingerprint`` (same
+    config parameters, or same command), and is ``None`` when there are none."""
+
     name: str
     command: str
     required_gpus: int = 1
-    estimated_duration: timedelta = timedelta(hours=1)
+    estimated_duration: timedelta | None = None
     status: TaskStatus = TaskStatus.PENDING
     id: str = field(default_factory=new_id)
     created_at: datetime = field(default_factory=lambda: datetime.now().replace(microsecond=0))
     notes: str = ""
     config_path: str | None = None
+    fingerprint: str = ""
+    estimate_runs: int = 0  # how many past runs the estimate is based on (not stored)
 
     def __post_init__(self) -> None:
         if self.required_gpus < 1:
             raise ValueError("required_gpus must be >= 1")
-        if self.estimated_duration <= timedelta(0):
+        if self.estimated_duration is not None and self.estimated_duration <= timedelta(0):
             raise ValueError("estimated_duration must be positive")
+        if not self.fingerprint:
+            self.fingerprint = command_fingerprint(self.command, self.required_gpus)
+
+
+def format_estimate(task: Task, long: bool = False) -> str:
+    if task.estimated_duration is None:
+        return "no run history" if long else "no data"
+    text = "~" + format_duration(task.estimated_duration)
+    if long:
+        runs = task.estimate_runs
+        text += f" (median of {runs} past run{'s' if runs != 1 else ''})"
+    return text
 
 
 def format_duration(d: timedelta) -> str:

@@ -43,8 +43,8 @@ class Slot:
     key: str  # assignment id, or GHOST for a placement preview
     task_id: str
     gpu_ids: tuple[int, ...]
-    start: datetime
-    end: datetime
+    start: datetime | None  # None: unknown (something ahead has no run history)
+    end: datetime | None
     kind: str  # "running" | "planned" | "ghost"
 
 
@@ -112,21 +112,31 @@ class AssignmentService:
         order: Sequence[tuple[str, str, tuple[int, ...], str]],
         now: datetime | None = None,
     ) -> list[Slot]:
-        """List-schedule ``order`` (key, task_id, gpu_ids, kind) after running work."""
+        """List-schedule ``order`` (key, task_id, gpu_ids, kind) after running work.
+
+        A GPU's free time becomes unknown (None) once anything on it has no
+        estimate; everything queued behind it on that GPU is then unknown too.
+        """
         now = (now or datetime.now()).replace(second=0, microsecond=0)
-        free_at: dict[int, datetime] = {}
+        free_at: dict[int, datetime | None] = {}
         slots: list[Slot] = []
+
+        def ready(gpus) -> datetime | None:
+            times = [free_at.get(g, now) for g in gpus]
+            return None if None in times else max([now, *times])
+
         for a in self.running():
-            start, end = a.display_interval(now)
+            end = a.expected_end(now)
             for g in a.display_gpu_ids:
-                free_at[g] = max(free_at.get(g, now), end)
-            slots.append(Slot(a.id, a.task_id, a.display_gpu_ids, start, end, "running"))
+                free_at[g] = None if end is None or free_at.get(g, now) is None else max(
+                    free_at.get(g, now), end)
+            slots.append(Slot(a.id, a.task_id, a.display_gpu_ids, a.actual_start, end, "running"))
         for key, task_id, gpus, kind in order:
-            dur = self._duration(task_id)
-            if dur is None:
+            if task_id not in self.store.tasks:
                 continue
-            start = max([now, *(free_at.get(g, now) for g in gpus)])
-            end = start + dur
+            dur = self._duration(task_id)
+            start = ready(gpus)
+            end = start + dur if start is not None and dur is not None else None
             for g in gpus:
                 free_at[g] = end
             slots.append(Slot(key, task_id, tuple(gpus), start, end, kind))
@@ -221,9 +231,8 @@ class AssignmentService:
         if not res.ok:
             return res
         task = self.store.tasks[task_id]
-        now = datetime.now().replace(second=0, microsecond=0)
-        a = Assignment(task_id=task_id, gpu_ids=tuple(gpu_ids), planned_start=now,
-                       planned_end=now + task.estimated_duration)
+        a = Assignment(task_id=task_id, gpu_ids=tuple(gpu_ids), planned_start=None,
+                       planned_end=None)  # times are derived by recompute()
         order = self.planned()
         pos = len(order) if position is None else max(0, min(len(order), position))
         order.insert(pos, a)

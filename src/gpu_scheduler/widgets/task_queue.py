@@ -39,8 +39,8 @@ class TaskQueue(HorizontalScroll, can_focus=True):
         if ids:
             empty.remove()
         elif not empty:
-            self.mount(Static("No tasks — press [b]n[/b] to add one, or [b]T[/b] in the Configs view.",
-                              id="queue-empty"))
+            self.mount(Static("Queue empty — every task is on the timeline. Press [b]n[/b] to add "
+                              "one, or [b]T[/b] in the Configs view.", id="queue-empty"))
         for i, t in enumerate(tasks):
             card = cards.get(t.id)
             if card is None:

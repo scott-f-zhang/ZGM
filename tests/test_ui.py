@@ -32,8 +32,8 @@ def make_app(config_dir: Path, tasks: list[Task] | None = None) -> GPUSchedulerA
     return app
 
 
-def task(name: str, gpus: int = 1, hours: float = 1) -> Task:
-    return Task(name, f"echo {name}", gpus, timedelta(hours=hours))
+def task(name: str, gpus: int = 1) -> Task:
+    return Task(name, f"echo {name}", gpus)
 
 
 async def test_boots_with_one_row_per_gpu(config_dir):
@@ -326,11 +326,9 @@ async def test_new_task_dialog(config_dir):
         await pilot.press(*"sweep", "enter")
         await pilot.press("enter")  # keep default command
         await pilot.press("backspace", "2", "enter")
-        await pilot.press(*["backspace"] * 2, *"90m", "enter")
         await pilot.pause()
         (t,) = app.store.tasks.values()
-        assert (t.name, t.required_gpus, t.estimated_duration) == (
-            "sweep", 2, timedelta(minutes=90))
+        assert (t.name, t.required_gpus, t.estimated_duration) == ("sweep", 2, None)
         assert len(app.screen.query(TaskCard)) == 1
 
 
@@ -391,7 +389,7 @@ async def test_config_edit_derive_and_task(config_dir):
         await pilot.pause()
         (t,) = app.store.tasks.values()
         assert t.config_path == str(child_file.resolve())
-        assert t.estimated_duration == timedelta(hours=3)
+        assert t.estimated_duration is None  # this exact config never ran
         await pilot.press("1")
         await pilot.pause()
         assert [c.task_model.id for c in app.screen.query(TaskCard)] == [t.id]
@@ -409,15 +407,138 @@ async def test_runtime_disabled_by_default(config_dir):
 async def test_mock_runtime_records_actual_times(config_dir):
     from gpu_scheduler.runtime.mock import MockRuntime
 
-    a = task("alpha", hours=1)
+    a = task("alpha")
     app = make_app(config_dir, [a])
     app.runtime = MockRuntime(speedup=1e9)
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         asg = app.assignment_service.assign(a.id, [1]).assignment
-        await pilot.press("r")
+        await pilot.press("tab", "r")  # timeline cursor on the planned card
         assert app.store.tasks[a.id].status == TaskStatus.RUNNING
         app.poll_runs()
         assert asg.actual_end is not None and asg.actual_start is not None
         assert asg.actual_gpu_ids == (1,)
         assert app.store.tasks[a.id].status == TaskStatus.COMPLETED
+        assert app.store.tasks[a.id] not in app.store.waiting_tasks()
+
+
+async def test_queue_hides_planned_and_running_tasks(config_dir):
+    a, b = task("alpha"), task("beta")
+    app = make_app(config_dir, [a, b])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("a", "enter")  # plan alpha (the selected card)
+        await pilot.pause()
+        ids = [c.task_model.id for c in app.screen.query(TaskCard)]
+        assert ids == [b.id]
+        assert app.screen.queue.selected_id == b.id  # selection moved on
+        assert app.screen.focused is app.screen.queue  # back to the queue
+        app.assignment_service.unassign(app.store.active_assignment(a.id).id)
+        await pilot.pause()
+        assert {c.task_model.id for c in app.screen.query(TaskCard)} == {a.id, b.id}
+
+
+async def test_rename_task_from_queue_and_timeline(config_dir):
+    a, b = task("alpha"), task("beta")
+    app = make_app(config_dir, [a, b])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(b.id, [0])
+        await pilot.pause()
+        await pilot.press("e")  # queue: alpha
+        await pilot.pause()
+        await pilot.press(*["backspace"] * 10, *"first", "enter", "enter", "enter")
+        await pilot.pause()
+        assert app.store.tasks[a.id].name == "first"
+        await pilot.press("tab", "e")  # timeline: beta's card
+        await pilot.pause()
+        await pilot.press(*["backspace"] * 10, *"second", "enter", "enter", "enter")
+        await pilot.pause()
+        assert app.store.tasks[b.id].name == "second"
+        row = app.screen.query_one("#gpu-row-0", GPURow)
+        assert "second" in strip_text(row)
+
+
+async def test_edit_gpu_count_of_planned_task(config_dir):
+    a = task("alpha")
+    app = make_app(config_dir, [a])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(a.id, [1])
+        await pilot.press("tab", "e")
+        await pilot.pause()
+        await pilot.press("enter", "enter", "backspace", "2", "enter")
+        await pilot.pause()
+        assert app.store.active_assignment(a.id).gpu_ids == (1, 2)
+        assert app.store.tasks[a.id].required_gpus == 2
+
+
+async def _start_running(app, pilot, t):
+    from gpu_scheduler.runtime.mock import MockRuntime
+
+    app.runtime = MockRuntime(speedup=1)  # stays running
+    app.assignment_service.assign(t.id, [0])
+    await pilot.pause()
+    await pilot.press("tab", "r")
+    await pilot.pause()
+    assert app.store.tasks[t.id].status == TaskStatus.RUNNING
+
+
+@pytest.mark.parametrize("choice,kept", [("requeue", True), ("delete", False)])
+async def test_stop_running_task(config_dir, choice, kept):
+    from gpu_scheduler.models import AssignmentState
+    from gpu_scheduler.widgets.dialogs import ChoiceScreen
+
+    a = task("alpha")
+    app = make_app(config_dir, [a])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await _start_running(app, pilot, a)
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, ChoiceScreen)
+        await pilot.click(f"#choice-{choice}")
+        await pilot.pause()
+        assert (a.id in app.store.tasks) is kept
+        if kept:
+            assert app.store.tasks[a.id].status == TaskStatus.PENDING
+            assert [c.task_model.id for c in app.screen.query(TaskCard)] == [a.id]
+            (run,) = app.store.assignments_for_task(a.id)
+            assert run.state == AssignmentState.CANCELLED and run.actual_end is not None
+            assert a.estimated_duration is None  # a stopped run is not a sample
+        assert not app._runs
+
+
+async def test_stop_can_be_called_off(config_dir):
+    a = task("alpha")
+    app = make_app(config_dir, [a])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await _start_running(app, pilot, a)
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.store.tasks[a.id].status == TaskStatus.RUNNING
+
+
+async def test_rename_config_repoints_tasks(config_dir):
+    app = make_app(config_dir)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.press("2")
+        await pilot.pause()
+        screen: ConfigScreen = app.screen
+        repo = app.config_repo
+        screen.current = repo.get("resnet50_adamw").path
+        screen.refresh_params()
+        await pilot.press("T")  # a task from the config, before the rename
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause()
+        await pilot.press(*["backspace"] * 30, *"rn50_adamw", "enter")
+        await pilot.pause()
+        assert (config_dir / "rn50_adamw.yaml").exists()
+        assert "_base_: rn50_adamw.yaml" in (config_dir / "resnet50_adamw_bs512.yaml").read_text()
+        (t,) = app.store.tasks.values()
+        assert t.config_path.endswith("rn50_adamw.yaml") and "rn50_adamw.yaml" in t.command
+        assert screen.current.name == "rn50_adamw.yaml"

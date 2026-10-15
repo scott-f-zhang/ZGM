@@ -13,7 +13,7 @@ from textual.widgets import Footer, Static
 
 from ..models import AssignmentState, Task, TaskStatus
 from ..services.scheduler import Result, Slot
-from ..widgets.dialogs import new_task_form
+from ..widgets.dialogs import ChoiceScreen, apply_task_edit, edit_task_form, new_task_form
 from ..widgets.gpu_row import GPURow
 from ..widgets.gpu_timeline import GPUTimeline
 from ..widgets.task_card import TaskCard
@@ -50,8 +50,10 @@ class ScheduleScreen(Screen):
         Binding("left_square_bracket,shift+left", "shift(-1)", "Earlier", show=False),
         Binding("right_square_bracket,shift+right", "shift(1)", "Later", show=False),
         Binding("n", "new_task", "New task"),
+        Binding("e", "edit_task", "Edit/rename"),
         Binding("d", "delete_task", "Delete task"),
         Binding("r", "run", "Run", show=False),
+        Binding("s", "stop", "Stop"),
         Binding("tab", "toggle_focus", "Queue⇄Timeline"),
     ]
 
@@ -109,7 +111,7 @@ class ScheduleScreen(Screen):
     def refresh_all(self) -> None:
         if not self.is_mounted:
             return
-        self.queue.set_tasks(self.store.ordered_tasks())
+        self.queue.set_tasks(self.store.waiting_tasks())
         self.refresh_timeline()
         self.refresh_details()
 
@@ -141,13 +143,20 @@ class ScheduleScreen(Screen):
         tid = self.queue.selected_id
         return self.store.tasks.get(tid) if tid else None
 
+    def current_task(self) -> Task | None:
+        """The task actions apply to: the card under the timeline cursor when the
+        timeline has focus, otherwise the selected queue card."""
+        if self.focused is self.timeline:
+            slot = self.timeline.slot_under_cursor()
+            return self.store.tasks.get(slot.task_id) if slot else None
+        return self.selected_task()
+
     def refresh_details(self) -> None:
         details = self.query_one(TaskDetails)
-        task = self.selected_task()
-        if self.focused is self.timeline and self.placement is None:
-            slot = self.timeline.slot_under_cursor()
-            if slot is not None:
-                task = self.store.tasks.get(slot.task_id)
+        if self.placement is not None:
+            task = self.store.tasks.get(self.placement.task_id)
+        else:
+            task = self.current_task()
         note = None
         if self.preview and not self.preview.result.ok:
             note = Text(f"✗ {self.preview.result.message}", style="bold red")
@@ -170,6 +179,7 @@ class ScheduleScreen(Screen):
         else:
             msg.append(
                 " Tab queue⇄timeline · a assign · Enter pick up · [ ] reorder · u unassign · "
+                "e edit/rename · s stop · "
                 "h/l +/- history · drag cards/blocks with the mouse",
                 style="dim",
             )
@@ -353,7 +363,56 @@ class ScheduleScreen(Screen):
             self.timeline.focus()
 
     def action_run(self) -> None:
-        self.app.run_selected(self.selected_task())
+        self.app.run_selected(self.current_task())
+
+    def action_edit_task(self) -> None:
+        task = self.current_task()
+        if task is None:
+            self.notify("Select a task in the queue or on the timeline first.", severity="warning")
+            return
+        running = task.status == TaskStatus.RUNNING
+
+        def done(values) -> None:
+            if not values:
+                return
+            name, command, gpus = values
+            before = (task.name, task.command, task.required_gpus, task.fingerprint)
+            apply_task_edit(task, name, command, gpus)
+            a = self.store.active_assignment(task.id)
+            if a is not None and a.state == AssignmentState.PLANNED and gpus != len(a.gpu_ids):
+                # keep its queue position but give it the new number of GPUs
+                res = self.svc.move(a.id, self.svc.suggest_gpus(task, a.gpu_ids[0]))
+                if not res.ok:
+                    task.name, task.command, task.required_gpus, task.fingerprint = before
+                    self.notify(f"Not saved: {res.message}", severity="error")
+                    return
+            self.store.update_task(task)
+            self.svc.recompute()
+            self.notify(f"Saved {task.name}")
+
+        self.app.push_screen(edit_task_form(task, name_only=running), done)
+
+    def action_stop(self) -> None:
+        task = self.current_task()
+        if task is None or task.status != TaskStatus.RUNNING:
+            self.notify("Put the timeline cursor on a running task (▶) to stop it.",
+                        severity="warning")
+            return
+
+        def done(choice: str | None) -> None:
+            if choice not in ("requeue", "delete"):
+                return
+            self.app.stop_task(task, requeue=choice == "requeue")
+            self.notify(f"Stopped {task.name}" + (", back in the queue" if choice == "requeue"
+                                                  else " and deleted it"))
+
+        self.app.push_screen(ChoiceScreen(
+            f"Stop {task.name}?",
+            "The partial run stays in the history (not counted for estimates).",
+            [("requeue", "Stop and put it back in the queue", "primary"),
+             ("delete", "Stop and delete the task", "error"),
+             ("keep", "Keep running", "default")],
+        ), done)
 
     def check_action(self, action: str, parameters) -> bool | None:
         if action == "run":

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import statistics
+from datetime import timedelta
 from pathlib import Path
 
 from rich.syntax import Syntax
@@ -13,7 +15,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Input, Static, Tree
 
-from ..models import ConfigNode, Origin
+from ..models import ConfigNode, Origin, format_duration
 from ..services import config_loader as cl
 from ..services.config_repo import MISSING
 from ..widgets.dialogs import FormScreen
@@ -32,6 +34,7 @@ class ConfigScreen(Screen):
         Binding("x", "revert", "Revert to inherited"),
         Binding("n", "add_key", "Add key"),
         Binding("D", "derive", "Derive"),
+        Binding("r", "rename", "Rename"),
         Binding("ctrl+s", "save", "Save"),
         Binding("R", "reload", "Reload"),
         Binding("T", "to_task", "→ Task"),
@@ -169,7 +172,8 @@ class ConfigScreen(Screen):
             self.refresh_preview()
             return
         dirty = " *" if node.dirty else ""
-        table.border_title = f"Parameters · {self.repo.rel(node.path)}{dirty}"
+        table.border_title = (f"Parameters · {self.repo.rel(node.path)}{dirty}"
+                              f" · {self.estimate_text(node)}")
         if node.error:
             table.add_row(Text("error", style="red"), Text(node.error, style="red"), "", key="__error__")
         for key, value, prov in self.repo.params(node):
@@ -355,6 +359,50 @@ class ConfigScreen(Screen):
         self.notify(f"Saved {n} file(s)" if n else "Nothing to save")
         self.refresh_tree_labels()
         self.refresh_params()
+
+    def estimate_text(self, node: ConfigNode) -> str:
+        """Run-time estimate for these exact parameters, from completed runs."""
+        if node.error:
+            return "no estimate"
+        gpus = int((node.resolved.get(cl.SCHEDULER_KEY) or {}).get("gpus", 1))
+        past = self.app.store.run_durations().get(self.repo.params_fingerprint(node, gpus), [])
+        if not past:
+            return "est. no run history"
+        median = timedelta(seconds=round(statistics.median(d.total_seconds() for d in past)))
+        n = len(past)
+        return f"est. ~{format_duration(median)} ({n} run{'s' if n != 1 else ''})"
+
+    def action_rename(self) -> None:
+        node = self.node()
+        if node is None:
+            return
+
+        def done(new_name) -> None:
+            if not new_name:
+                return
+            try:
+                old = node.path
+                new, children = self.repo.rename(node, new_name)
+            except Exception as e:
+                self.notify(str(e), severity="error")
+                return
+            tasks = self.app.config_renamed(old, new)
+            self.current = new
+            self.rebuild_tree()
+            extra = []
+            if children:
+                extra.append(f"updated _base_ in {', '.join(children)}")
+            if tasks:
+                extra.append(f"repointed {tasks} task(s)")
+            self.notify(f"Renamed to {new.name}" + (f" ({'; '.join(extra)})" if extra else ""),
+                        title="Renamed")
+
+        self.app.push_screen(
+            FormScreen(f"Rename {node.path.name}", [("name", "New name", node.name)],
+                       lambda v: v["name"].strip() or None,
+                       hint="Children that inherit from it are updated to the new name."),
+            done,
+        )
 
     def action_reload(self) -> None:
         dirty = [n.name for n in self.repo.nodes.values() if n.dirty]

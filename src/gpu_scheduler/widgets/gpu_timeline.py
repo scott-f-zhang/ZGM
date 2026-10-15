@@ -20,6 +20,7 @@ from .palette import GHOST_BAD, GHOST_OK, HISTORY_COLOR, task_color
 from .timeline_state import DEFAULT_CARD_WIDTH, Hit, TimelineState, wrap_center
 
 FAILED_COLOR = "#7f1d1d"
+STOPPED_COLOR = "#78350f"
 
 
 def card_lines(task: Task | None, slot: Slot, width: int, now: datetime,
@@ -184,6 +185,8 @@ class GPUTimeline(Vertical, can_focus=True):
                 bg, fg = task_color(a.task_id), "#0b0f19"
             elif a.state == AssignmentState.FAILED:
                 bg, fg = FAILED_COLOR, "#fecaca"
+            elif a.state == AssignmentState.CANCELLED:
+                bg, fg = STOPPED_COLOR, "#fde68a"
             else:
                 bg, fg = HISTORY_COLOR, "#e5e7eb"
             past.append(PastBlock(a.id, span[0], span[1], task.name if task else a.task_id,
