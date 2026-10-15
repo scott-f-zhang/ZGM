@@ -11,17 +11,21 @@ per-device resources and is left for phase 2.
 from __future__ import annotations
 
 from ..models import Assignment, Task
+from ..services.launcher import build_process
 from .base import RunHandle, RunState
 
 
-def _run_command(command: str) -> dict:
+def _run_command(args: list[str] | str, cwd: str, env: dict[str, str]) -> dict:
+    """Runs in the Ray worker: its own environment, plus the task's overrides."""
     import os
     import subprocess
 
     import ray
 
     gpu_ids = [int(g) for g in ray.get_gpu_ids()]
-    proc = subprocess.run(command, shell=True, capture_output=True, text=True)
+    full_env = {**os.environ, **env, "ZGM_GPU_IDS": ",".join(map(str, gpu_ids))}
+    proc = subprocess.run(args, shell=isinstance(args, str), cwd=cwd, env=full_env,
+                          capture_output=True, text=True)
     return {
         "returncode": proc.returncode,
         "gpu_ids": gpu_ids,
@@ -59,7 +63,8 @@ class RayRuntime:
         ray = self._ensure()
         n = task.required_gpus if num_gpus is None else num_gpus
         remote = ray.remote(num_gpus=n)(_run_command)
-        ref = remote.remote(task.command)
+        spec = build_process(task, None)  # Ray sets CUDA_VISIBLE_DEVICES itself
+        ref = remote.remote(spec.args, spec.cwd, spec.overrides())
         return RunHandle(assignment.id, ref)
 
     def cancel(self, handle: RunHandle) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from rich.table import Table
 from rich.text import Text
@@ -27,6 +28,7 @@ class TaskDetails(Static):
         task: Task | None,
         assignments: list[Assignment] | None = None,
         note: Text | str | None = None,
+        log: Path | None = None,
     ) -> None:
         if task is None:
             self.update(Text("No task selected.", style="dim"))
@@ -49,7 +51,18 @@ class TaskDetails(Static):
             Text(format_estimate(task, long=True),
                  style="" if task.estimated_duration else "dim italic"),
         )
-        grid.add_row("Command", Text(task.command, overflow="fold"), "ID", task.id)
+        spec = task.launch
+        grid.add_row("Run", Text(spec.describe(), overflow="fold"), "ID", task.id)
+        grid.add_row(
+            "Environment",
+            Text(spec.environment or "python on PATH", overflow="fold",
+                 style="" if spec.environment else "dim"),
+            "Working dir",
+            Text(spec.cwd or "zgm's working dir", overflow="fold",
+                 style="" if spec.cwd else "dim"),
+        )
+        if spec.env:
+            grid.add_row("Env vars", Text(spec.env_text, overflow="fold"), "", "")
         if task.config_path:
             grid.add_row("Config", Text(task.config_path, overflow="fold"), "", "")
 
@@ -81,6 +94,8 @@ class TaskDetails(Static):
                 "on GPU",
                 f"{_gpus(a.display_gpu_ids)} ({a.state.value})",
             )
+        if log:
+            grid.add_row("Log", Text(str(log), overflow="fold"), "", "")
         if note:
             grid.add_row("", note if isinstance(note, Text) else Text(note), "", "")
         self.update(grid)

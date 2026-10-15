@@ -21,8 +21,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "substituted (default: %(default)r)")
     p.add_argument("--demo", action="store_true",
                    help="seed example tasks when the database is empty")
-    p.add_argument("--runtime", choices=["none", "mock", "ray"], default="none",
-                   help="execution backend for the 'r' key (default: none = planning only)")
+    p.add_argument("--runtime", choices=["none", "local", "mock", "ray"], default="none",
+                   help="execution backend for the 'r' key: local = child processes on "
+                        "this machine (default: none = planning only)")
+    p.add_argument("--log-dir", default=None,
+                   help="where the local runtime writes task logs "
+                        "(default: logs/ next to the database)")
     p.add_argument("--card-width", type=int, default=24, metavar="N",
                    help="width of queued task cards on the timeline (min 12, default 24)")
     p.add_argument("--ray-address", default=None, help="Ray cluster address (default: local)")
@@ -32,7 +36,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     runtime = None
-    if args.runtime == "mock":
+    if args.runtime == "local":
+        from pathlib import Path
+
+        from .runtime.local import LocalRuntime
+
+        runtime = LocalRuntime(args.log_dir or Path(args.db).expanduser().parent / "logs")
+    elif args.runtime == "mock":
         from .runtime.mock import MockRuntime
 
         runtime = MockRuntime()

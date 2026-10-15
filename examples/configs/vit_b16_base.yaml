@@ -1,5 +1,9 @@
 _scheduler_:
   gpus: 2
+  run:
+    cwd: ../project            # relative to this file
+    script: train.py
+    args: [--config, "{config}"]   # quote placeholders: {..} is a mapping in YAML
 model:
   arch: vit_b16
   drop_path: 0.1

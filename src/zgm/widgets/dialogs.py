@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from textual.app import ComposeResult
@@ -11,17 +12,18 @@ from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
-from ..models import Task, command_fingerprint
+from ..models import LaunchSpec, Task, launch_fingerprint
 
 
 class FormScreen(ModalScreen[Any]):
     """Generic labelled-input form; ``validate`` turns values into a result or raises."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Cancel"), Binding("ctrl+s", "submit", "OK")]
     DEFAULT_CSS = """
     FormScreen { align: center middle; }
     FormScreen > Vertical {
-        width: 72; height: auto; padding: 1 2;
+        width: 84; max-width: 100%; height: auto; max-height: 100%; overflow-y: auto;
+        padding: 1 2;
         border: round $accent; background: $panel;
     }
     FormScreen .form-title { text-style: bold; margin-bottom: 1; }
@@ -93,65 +95,75 @@ class FormScreen(ModalScreen[Any]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+    def action_submit(self) -> None:
+        self.submit()
 
-def _task_fields(v: dict[str, str]) -> tuple[str, str, int]:
+
+def _task_fields(v: dict[str, str]) -> tuple[str, LaunchSpec, int]:
     name = v["name"].strip()
     if not name:
         raise ValueError("name is required")
-    command = v["command"].strip()
-    if not command:
-        raise ValueError("command is required")
     try:
         gpus = int(v["gpus"])
     except ValueError:
         raise ValueError("GPUs must be an integer") from None
     if gpus < 1:
         raise ValueError("GPUs must be at least 1")
-    return name, command, gpus
+    cwd = v["cwd"].strip()
+    if cwd:
+        path = Path(cwd).expanduser()
+        if not path.is_dir():
+            raise ValueError(f"working directory not found: {cwd}")
+        cwd = str(path.resolve())
+    spec = LaunchSpec.from_text(v["run"], v["environment"], cwd, v["env"])
+    return name, spec, gpus
 
 
-ESTIMATE_HINT = ("No duration to enter: the estimate comes from past runs of the same "
-                 "command/config, or shows 'no data'.")
+TASK_HINT = ("Run: 'train.py ...' / '-m pkg ...' use the environment's Python; anything "
+             "else is a shell command. Environment: python path, 'conda:NAME', or empty "
+             "(python on PATH). Env vars: 'A=1; B=2'. Ctrl+S saves.")
+
+
+def _task_form_fields(task: Task | None) -> list[tuple[str, str, str]]:
+    spec = task.launch if task else None
+    return [
+        ("name", "Name", task.name if task else ""),
+        ("gpus", "GPUs", str(task.required_gpus) if task else "1"),
+        ("run", "Run", spec.target if spec else "train.py"),
+        ("environment", "Environment", spec.environment if spec else ""),
+        ("cwd", "Working dir", (spec.cwd or "") if spec else str(Path.cwd())),
+        ("env", "Env vars", spec.env_text if spec else ""),
+    ]
 
 
 def new_task_form() -> FormScreen:
     def build(v: dict[str, str]) -> Task:
-        name, command, gpus = _task_fields(v)
-        return Task(name=name, command=command, required_gpus=gpus)
+        name, spec, gpus = _task_fields(v)
+        return Task(name=name, launch=spec, required_gpus=gpus)
 
-    return FormScreen(
-        "New task",
-        [("name", "Name", ""), ("command", "Command", "python train.py"), ("gpus", "GPUs", "1")],
-        build,
-        hint=ESTIMATE_HINT,
-    )
+    return FormScreen("New task", _task_form_fields(None), build, hint=TASK_HINT)
 
 
 def edit_task_form(task: Task, name_only: bool = False) -> FormScreen:
-    """Rename/edit a task. Returns (name, command, gpus) or None."""
+    """Rename/edit a task. Returns (name, launch spec, gpus) or None."""
 
-    def build(v: dict[str, str]) -> tuple[str, str, int]:
-        name, command, gpus = _task_fields(v)
-        if name_only and (command != task.command or gpus != task.required_gpus):
+    def build(v: dict[str, str]) -> tuple[str, LaunchSpec, int]:
+        name, spec, gpus = _task_fields(v)
+        if name_only and (spec != task.launch or gpus != task.required_gpus):
             raise ValueError("the task is running: only its name can change")
-        return name, command, gpus
+        return name, spec, gpus
 
-    hint = "Running: only the name can change." if name_only else ESTIMATE_HINT
-    return FormScreen(
-        f"Edit {task.name}",
-        [("name", "Name", task.name), ("command", "Command", task.command),
-         ("gpus", "GPUs", str(task.required_gpus))],
-        build,
-        hint=hint,
-    )
+    hint = "Running: only the name can change." if name_only else TASK_HINT
+    return FormScreen(f"Edit {task.name}", _task_form_fields(task), build, hint=hint)
 
 
-def apply_task_edit(task: Task, name: str, command: str, gpus: int) -> None:
+def apply_task_edit(task: Task, name: str, spec: LaunchSpec, gpus: int) -> None:
     task.name = name
-    if command != task.command or gpus != task.required_gpus:
-        task.command, task.required_gpus = command, gpus
+    if spec != task.launch or gpus != task.required_gpus:
+        task.launch, task.required_gpus = spec, gpus
+        task.command = spec.describe()
         if not task.config_path:  # config tasks are keyed by their parameters instead
-            task.fingerprint = command_fingerprint(command, gpus)
+            task.fingerprint = launch_fingerprint(spec, gpus)
 
 
 class ChoiceScreen(ModalScreen[str | None]):

@@ -324,8 +324,8 @@ async def test_new_task_dialog(config_dir):
         await pilot.pause()
         await pilot.press("n")
         await pilot.press(*"sweep", "enter")
-        await pilot.press("enter")  # keep default command
         await pilot.press("backspace", "2", "enter")
+        await pilot.press(*["enter"] * 4)  # defaults: run, environment, working dir, env vars
         await pilot.pause()
         (t,) = app.store.tasks.values()
         assert (t.name, t.required_gpus, t.estimated_duration) == ("sweep", 2, None)
@@ -447,12 +447,12 @@ async def test_rename_task_from_queue_and_timeline(config_dir):
         await pilot.pause()
         await pilot.press("e")  # queue: alpha
         await pilot.pause()
-        await pilot.press(*["backspace"] * 10, *"first", "enter", "enter", "enter")
+        await pilot.press(*["backspace"] * 10, *"first", *["enter"] * 6)
         await pilot.pause()
         assert app.store.tasks[a.id].name == "first"
         await pilot.press("tab", "e")  # timeline: beta's card
         await pilot.pause()
-        await pilot.press(*["backspace"] * 10, *"second", "enter", "enter", "enter")
+        await pilot.press(*["backspace"] * 10, *"second", *["enter"] * 6)
         await pilot.pause()
         assert app.store.tasks[b.id].name == "second"
         row = app.screen.query_one("#gpu-row-0", GPURow)
@@ -467,7 +467,7 @@ async def test_edit_gpu_count_of_planned_task(config_dir):
         app.assignment_service.assign(a.id, [1])
         await pilot.press("tab", "e")
         await pilot.pause()
-        await pilot.press("enter", "enter", "backspace", "2", "enter")
+        await pilot.press("enter", "backspace", "2", *["enter"] * 5)
         await pilot.pause()
         assert app.store.active_assignment(a.id).gpu_ids == (1, 2)
         assert app.store.tasks[a.id].required_gpus == 2
@@ -540,5 +540,54 @@ async def test_rename_config_repoints_tasks(config_dir):
         assert (config_dir / "rn50_adamw.yaml").exists()
         assert "_base_: rn50_adamw.yaml" in (config_dir / "resnet50_adamw_bs512.yaml").read_text(encoding="utf-8")
         (t,) = app.store.tasks.values()
-        assert t.config_path.endswith("rn50_adamw.yaml") and "rn50_adamw.yaml" in t.command
+        assert t.config_path.endswith("rn50_adamw.yaml")
+        assert t.launch.args == ["--config", "{config}"]  # resolved from config_path at start
         assert screen.current.name == "rn50_adamw.yaml"
+
+
+async def test_run_user_script_with_local_runtime(config_dir, tmp_path):
+    import sys
+
+    from zgm.models import AssignmentState, LaunchSpec
+    from zgm.runtime.local import LocalRuntime
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "train.py").write_text(
+        "import os\nprint('on', os.environ['CUDA_VISIBLE_DEVICES'])\n", encoding="utf-8")
+    t = Task("job", launch=LaunchSpec(cwd=str(proj), python=sys.executable, script="train.py"))
+    app = make_app(config_dir, [t])
+    app.runtime = LocalRuntime(tmp_path / "logs")
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(t.id, [2])
+        await pilot.pause()
+        await pilot.press("tab", "r")
+        await pilot.pause()
+        assert app.store.tasks[t.id].status == TaskStatus.RUNNING
+        for _ in range(100):
+            app.poll_runs()
+            if app.store.tasks[t.id].status != TaskStatus.RUNNING:
+                break
+            await pilot.pause(0.1)
+        assert app.store.tasks[t.id].status == TaskStatus.COMPLETED
+        (a,) = app.store.assignments_for_task(t.id)
+        assert (a.state, a.actual_gpu_ids) == (AssignmentState.COMPLETED, (2,))
+        log = app.log_path(t)
+        assert log is not None and "on 2" in log.read_text(encoding="utf-8")
+
+
+async def test_run_reports_launch_errors(config_dir, tmp_path):
+    from zgm.models import LaunchSpec
+    from zgm.runtime.local import LocalRuntime
+
+    t = Task("job", launch=LaunchSpec(cwd=str(tmp_path), script="missing.py"))
+    app = make_app(config_dir, [t])
+    app.runtime = LocalRuntime(tmp_path / "logs")
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(t.id, [0])
+        await pilot.pause()
+        await pilot.press("tab", "r")
+        await pilot.pause()
+        assert app.store.tasks[t.id].status == TaskStatus.PLANNED  # nothing started

@@ -80,7 +80,11 @@ class ZGMApp(App):
             self.notify("Place the task on the timeline before running it.", severity="warning")
             return
         self.refresh_fingerprint(task)  # the run uses the config as it is *now*
-        handle = self.runtime.submit(task, a)
+        try:
+            handle = self.runtime.submit(task, a)
+        except Exception as e:  # bad working dir, missing python/conda env, ...
+            self.notify(f"Could not start {task.name}: {e}", severity="error", timeout=10)
+            return
         a.state = AssignmentState.RUNNING
         a.actual_start = a.actual_start or datetime.now()
         # remember the estimate the run started with (None = no history)
@@ -94,6 +98,16 @@ class ZGMApp(App):
         self.assignment_service.recompute()
         self.store.notify()
         self.notify(f"Started {task.name} via {self.runtime.name}")
+
+    def log_path(self, task: Task) -> Path | None:
+        """The log of the task's latest run, if the runtime writes log files."""
+        if self.runtime is None or not hasattr(self.runtime, "log_path"):
+            return None
+        runs = [a for a in self.store.assignments_for_task(task.id) if a.actual_start]
+        if not runs:
+            return None
+        path = self.runtime.log_path(max(runs, key=lambda a: a.actual_start).id)
+        return path if path.exists() else None
 
     def refresh_fingerprint(self, task: Task) -> None:
         if not task.config_path:
@@ -137,7 +151,11 @@ class ZGMApp(App):
         for t in self.store.tasks.values():
             if t.config_path and Path(t.config_path) == old:
                 t.config_path = str(new)
-                t.command = t.command.replace(str(old), str(new))
+                spec = t.launch
+                if spec.command:  # made from --command-template: the path is in it
+                    spec.command = spec.command.replace(str(old), str(new))
+                spec.args = [arg.replace(str(old), str(new)) for arg in spec.args]
+                t.command = spec.describe()
                 self.store.update_task(t, quiet=True)
                 count += 1
         if count:

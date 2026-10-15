@@ -1,6 +1,10 @@
 # Base ImageNet recipe for ResNet-50
 _scheduler_:
   gpus: 1
+  run:
+    cwd: ../project            # relative to this file
+    script: train.py
+    args: [--config, "{config}"]   # quote placeholders: {..} is a mapping in YAML
 
 model:
   arch: resnet50

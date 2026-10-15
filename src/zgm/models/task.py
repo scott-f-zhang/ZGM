@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 
+from .launch import LaunchSpec
+
 
 class TaskStatus(str, Enum):
     PENDING = "pending"  # not on the timeline
@@ -33,6 +35,17 @@ def command_fingerprint(command: str, gpus: int) -> str:
     return "cmd:" + _digest({"command": " ".join(command.split()), "gpus": gpus})
 
 
+def launch_fingerprint(spec: LaunchSpec, gpus: int) -> str:
+    """Identity of a plain task's workload: what it runs, where, and its GPU count.
+    The environment is not part of it. A bare command keeps its old fingerprint."""
+    if spec.command and not spec.cwd:
+        return command_fingerprint(spec.command, gpus)
+    return "cmd:" + _digest({
+        "cwd": spec.cwd, "script": spec.script, "module": spec.module,
+        "command": spec.command, "args": spec.args, "gpus": gpus,
+    })
+
+
 def config_fingerprint(params: dict, gpus: int) -> str:
     """Identity of a config-driven workload: resolved parameters and GPU count."""
     return "cfg:" + _digest({"params": params, "gpus": gpus})
@@ -45,7 +58,7 @@ class Task:
     config parameters, or same command), and is ``None`` when there are none."""
 
     name: str
-    command: str
+    command: str = ""  # one-line summary of ``launch`` (shown on cards)
     required_gpus: int = 1
     estimated_duration: timedelta | None = None
     status: TaskStatus = TaskStatus.PENDING
@@ -55,14 +68,19 @@ class Task:
     config_path: str | None = None
     fingerprint: str = ""
     estimate_runs: int = 0  # how many past runs the estimate is based on (not stored)
+    launch: LaunchSpec | None = None  # how to start it; a bare command if not given
 
     def __post_init__(self) -> None:
         if self.required_gpus < 1:
             raise ValueError("required_gpus must be >= 1")
         if self.estimated_duration is not None and self.estimated_duration <= timedelta(0):
             raise ValueError("estimated_duration must be positive")
+        if self.launch is None:
+            self.launch = LaunchSpec(command=self.command)
+        elif not self.command:
+            self.command = self.launch.describe()
         if not self.fingerprint:
-            self.fingerprint = command_fingerprint(self.command, self.required_gpus)
+            self.fingerprint = launch_fingerprint(self.launch, self.required_gpus)
 
 
 def format_estimate(task: Task, long: bool = False) -> str:
