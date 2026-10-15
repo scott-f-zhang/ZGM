@@ -74,6 +74,8 @@ class ZGMApp(App):
 
     def tick(self) -> None:
         self.provider.refresh(self.gpus)
+        if self.store.sync():  # tasks added from the command line (zgm submit)
+            self.assignment_service.recompute()
         self.poll_runs()
         self.dispatch()
         self.assignment_service.recompute(persist=False)  # queued starts follow "now"
