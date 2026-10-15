@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from conftest import T0, make_task
+from conftest import T0, make_task, planned_count
 from gpu_scheduler.models import Assignment, AssignmentState, TaskStatus
 from gpu_scheduler.services import gpu_discovery
 from gpu_scheduler.services.gpu_discovery import MockGPUProvider, make_provider
@@ -72,7 +72,7 @@ def test_move_reorders_and_changes_gpu(store, svc):
     assert s["c"][0] == T0  # alone on GPU 2
     # assign() on an already-planned task moves rather than duplicating
     assert svc.assign(c.id, [1], 0).ok
-    assert len(store.assignments) == 3 and names(svc)[0] == "c"
+    assert planned_count(store) == 3 and names(svc)[0] == "c"
 
 
 def test_shift(store, svc):
@@ -114,7 +114,7 @@ def test_shape_errors_are_refused(store, svc):
     for gpus in ([0], [0, 0], [0, 9]):
         res = svc.assign(t.id, gpus)
         assert not res.ok and res.error
-    assert not store.assignments
+    assert planned_count(store) == 0
     assert svc.assign(t.id, [2, 1]).assignment.gpu_ids == (1, 2)
 
 
@@ -130,7 +130,7 @@ def test_preview_does_not_persist(store, svc):
     slots, ghost = svc.preview(b.id, [0], 0, now=T0)
     assert ghost.start == T0 and [s.kind for s in slots] == ["ghost", "planned"]
     assert slots[1].start == T0 + timedelta(hours=1)
-    assert len(store.assignments) == 1
+    assert planned_count(store) == 1
 
 
 def test_suggest_gpus(store, svc):
@@ -215,3 +215,28 @@ def test_validator_detects_overlap():
     c = Assignment("c", (0,), T0 + timedelta(hours=2), T0 + timedelta(hours=3))
     v = ConflictValidator()
     assert v.find_conflicts(a, [b, c], datetime(2000, 1, 1)) == [b]
+
+
+def test_unknown_estimate_makes_later_starts_unknown(store, svc):
+    a = make_task(store, "fresh", hours=None)  # never run before
+    b = make_task(store, "after", hours=1)
+    c = make_task(store, "elsewhere", hours=1)
+    assert a.estimated_duration is None and b.estimated_duration == timedelta(hours=1)
+    svc.assign(a.id, [0])
+    svc.assign(b.id, [0])
+    svc.assign(c.id, [1])
+    s = starts(svc)
+    assert s["fresh"] == (T0, None)  # starts now, end unknown
+    assert s["after"] == (None, None)  # behind unknown work on GPU 0
+    assert s["elsewhere"] == (T0, T0 + timedelta(hours=1))  # other GPU unaffected
+    svc.recompute(T0)
+    assert store.active_assignment(b.id).planned_start is None
+
+
+def test_running_without_estimate_blocks_with_unknown_end(store, svc):
+    a, b = make_task(store, "a", hours=None), make_task(store, "b")
+    store.save_assignment(Assignment(a.id, (0,), T0, None, actual_start=T0,
+                                     state=AssignmentState.RUNNING), "started")
+    svc.assign(b.id, [0])
+    kinds = {s.kind: s for s in svc.schedule(T0 + timedelta(hours=1))}
+    assert kinds["running"].end is None and kinds["planned"].start is None

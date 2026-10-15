@@ -178,7 +178,8 @@ def test_make_task_from_config(cfg):
     repo = ConfigRepository(cfg)
     task = repo.make_task(repo.get("grandchild"), "python train.py -c {path} --name {name}")
     assert task.required_gpus == 2  # overridden in grandchild
-    assert task.estimated_duration == timedelta(hours=2)  # inherited from base
+    assert task.estimated_duration is None  # estimates come from run history only
+    assert task.fingerprint.startswith("cfg:")
     assert task.command.endswith("grandchild.yaml --name grandchild")
     assert task.config_path == str((cfg / "grandchild.yaml").resolve())
 
@@ -203,3 +204,31 @@ def test_examples_resolve():
     assert repo.nodes and all(n.error is None for n in repo.nodes.values())
     bs512 = repo.get("resnet50_adamw_bs512")
     assert "momentum" not in bs512.resolved["optimizer"]  # removed by _delete_ in parent
+
+
+def test_fingerprint_follows_parameters_not_names(cfg):
+    repo = ConfigRepository(cfg)
+    child = repo.get("child")
+    fp = repo.params_fingerprint(child, 1)
+    twin = repo.derive(repo.get("base"), "twin", {"optimizer.lr": 0.05})  # same params as child
+    assert repo.params_fingerprint(twin, 1) == fp
+    assert repo.params_fingerprint(repo.get("base"), 1) != fp
+    assert repo.params_fingerprint(child, 2) != fp
+    # _scheduler_ metadata is not a training parameter
+    repo.set_value(child, "_scheduler_.name", "nice-name")
+    assert repo.params_fingerprint(child, 1) == fp
+
+
+def test_rename_updates_children(cfg):
+    repo = ConfigRepository(cfg)
+    new, children = repo.rename(repo.get("base"), "resnet_base")
+    assert new.name == "resnet_base.yaml" and not (cfg / "base.yaml").exists()
+    assert children == ["child"]
+    assert "_base_: resnet_base.yaml" in (cfg / "child.yaml").read_text()
+    gc = repo.get("grandchild")
+    assert gc.error is None and gc.resolved["model"]["arch"] == "resnet50"
+    with pytest.raises(FileExistsError):
+        repo.rename(repo.get("child"), "grandchild")
+    repo.set_value(repo.get("child"), "seed", 1)
+    with pytest.raises(ValueError, match="save first"):
+        repo.rename(repo.get("grandchild"), "gc2")

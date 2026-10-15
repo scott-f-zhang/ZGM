@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from ruamel.yaml.comments import CommentedMap
 
-from ..models import ConfigNode, Task, parse_duration
+from ..models import ConfigNode, Task, config_fingerprint
 from . import config_loader as cl
 
 DEFAULT_COMMAND_TEMPLATE = "python train.py --config {path}"
@@ -171,18 +171,23 @@ class ConfigRepository:
             self.save(n)
         return len(dirty)
 
+    @staticmethod
+    def _target(directory: Path, new_name: str, keep_suffix: str = ".yaml") -> Path:
+        name = new_name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.\-]+", name) or name.strip(".") == "":
+            raise ValueError("config name may only contain letters, digits, '_', '-', '.'")
+        if not name.endswith((".yaml", ".yml")):
+            name += keep_suffix
+        path = (directory / name).resolve()
+        if path.exists():
+            raise FileExistsError(f"{name} already exists")
+        return path
+
     def derive(
         self, parent: ConfigNode, new_name: str, overrides: dict[str, Any] | None = None
     ) -> ConfigNode:
         """Create ``new_name.yaml`` next to ``parent`` holding ``_base_`` + overrides."""
-        name = new_name.strip()
-        if not re.fullmatch(r"[A-Za-z0-9_.\-]+", name):
-            raise ValueError("config name may only contain letters, digits, '_', '-', '.'")
-        if not name.endswith((".yaml", ".yml")):
-            name += ".yaml"
-        path = (parent.path.parent / name).resolve()
-        if path.exists() or path in self.nodes:
-            raise FileExistsError(f"{name} already exists")
+        path = self._target(parent.path.parent, new_name)
         data = CommentedMap()
         data[cl.BASE_KEY] = parent.path.name
         for k, v in (overrides or {}).items():
@@ -193,21 +198,53 @@ class ConfigRepository:
         self._recompute()
         return node
 
+    def rename(self, node: ConfigNode, new_name: str) -> tuple[Path, list[str]]:
+        """Rename ``node``'s file and repoint every child's ``_base_`` at the new name.
+
+        Returns (new path, names of children that were rewritten). Refuses while
+        any config has unsaved edits, so nothing unsaved is written or lost.
+        """
+        old = node.path
+        new = self._target(old.parent, new_name, keep_suffix=old.suffix)
+        children = [n for n in self.nodes.values() if old in n.bases]
+        dirty = [n.name for n in self.nodes.values() if n.dirty]  # reload() would drop them
+        if dirty:
+            raise ValueError(f"save first: unsaved edits in {', '.join(dirty)}")
+        for child in children:
+            raw = child.own.get(cl.BASE_KEY)
+            rel = os.path.relpath(new, child.path.parent)
+            if isinstance(raw, str):
+                child.own[cl.BASE_KEY] = rel
+            else:
+                for i, item in enumerate(raw):
+                    if (child.path.parent / str(item)).resolve() == old:
+                        raw[i] = rel
+        old.rename(new)
+        for child in children:
+            self.save(child)
+        self.reload()
+        return new, [c.name for c in children]
+
     # tasks -----------------------------------------------------------------
+    def params_fingerprint(self, node: ConfigNode, gpus: int) -> str:
+        """Same resolved parameters + GPU count => same workload (for estimates)."""
+        params = {k: v for k, v in node.resolved.items() if k != cl.SCHEDULER_KEY}
+        return config_fingerprint(params, gpus)
+
     def make_task(self, node: ConfigNode, template: str = DEFAULT_COMMAND_TEMPLATE) -> Task:
+        """A task for ``node``. Its estimate comes from past runs of the same
+        parameters, never from the config itself."""
         if node.error:
             raise ValueError(node.error)
         meta = node.resolved.get(cl.SCHEDULER_KEY) or {}
         gpus = int(meta.get("gpus", 1))
-        dur = meta.get("estimated_duration", "1h")
-        duration = parse_duration(str(dur)) if not isinstance(dur, timedelta) else dur
         command = template.format(path=shlex.quote(str(node.path)), name=node.name)
         return Task(
             name=str(meta.get("name", node.name)),
             command=command,
             required_gpus=gpus,
-            estimated_duration=duration,
             config_path=str(node.path),
+            fingerprint=self.params_fingerprint(node, gpus),
         )
 
 

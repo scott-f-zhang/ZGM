@@ -1,6 +1,5 @@
 _scheduler_:
   gpus: 2
-  estimated_duration: 6h
 model:
   arch: vit_b16
   drop_path: 0.1

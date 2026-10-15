@@ -9,42 +9,44 @@ from pathlib import Path
 
 from ..models import Assignment, AssignmentState, Task, TaskStatus
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS tasks (
+# planned times and estimates are nullable: no run history means "unknown"
+TABLES = {
+    "tasks": """CREATE TABLE tasks (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     command TEXT NOT NULL,
     required_gpus INTEGER NOT NULL,
-    estimated_seconds REAL NOT NULL,
+    estimated_seconds REAL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     notes TEXT NOT NULL DEFAULT '',
-    config_path TEXT
-);
-CREATE TABLE IF NOT EXISTS assignments (
+    config_path TEXT,
+    fingerprint TEXT NOT NULL DEFAULT ''
+)""",
+    "assignments": """CREATE TABLE assignments (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
     gpu_ids TEXT NOT NULL,
     preferred_gpu_ids TEXT NOT NULL,
     actual_gpu_ids TEXT,
-    planned_start TEXT NOT NULL,
-    planned_end TEXT NOT NULL,
+    planned_start TEXT,
+    planned_end TEXT,
     actual_start TEXT,
     actual_end TEXT,
     state TEXT NOT NULL,
     seq INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS history (
+)""",
+    "history": """CREATE TABLE history (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
     event TEXT NOT NULL,
     task_id TEXT,
     assignment_id TEXT,
     detail TEXT
-);
-"""
+)""",
+}
 
 
 def default_db_path() -> Path:
@@ -66,20 +68,41 @@ class SqliteStorage:
         self.path = str(path)
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.conn.commit()
 
+    def _columns(self, table: str) -> dict[str, bool]:
+        """column name -> NOT NULL flag (empty if the table doesn't exist)."""
+        return {r["name"]: bool(r["notnull"])
+                for r in self.conn.execute(f"PRAGMA table_info({table})")}
+
     def _migrate(self) -> None:
-        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(assignments)")}
-        if "seq" not in cols:  # v1 -> v2: planned work becomes an ordered queue
-            self.conn.execute("ALTER TABLE assignments ADD COLUMN seq INTEGER NOT NULL DEFAULT 0")
+        """Create missing tables; rebuild any whose columns differ from TABLES."""
+        old_assignment_cols = self._columns("assignments")
+        for table, ddl in TABLES.items():
+            old = self._columns(table)
+            if not old:
+                self.conn.execute(ddl)
+                continue
+            self.conn.execute(ddl.replace(f"CREATE TABLE {table}", "CREATE TEMP TABLE _target"))
+            target = self._columns("_target")
+            self.conn.execute("DROP TABLE _target")
+            if target == old:
+                continue
+            common = ", ".join(c for c in target if c in old)
+            self.conn.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
+            self.conn.execute(ddl)
+            self.conn.execute(f"INSERT INTO {table} ({common}) SELECT {common} FROM {table}_old")
+            self.conn.execute(f"DROP TABLE {table}_old")
+        if old_assignment_cols and "seq" not in old_assignment_cols:
+            # v1 -> v2: planned work becomes an ordered queue, in planned-start order
             rows = self.conn.execute(
                 "SELECT id FROM assignments WHERE state='planned' ORDER BY planned_start"
             ).fetchall()
             for i, r in enumerate(rows):
                 self.conn.execute("UPDATE assignments SET seq=? WHERE id=?", (i, r["id"]))
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -87,17 +110,19 @@ class SqliteStorage:
     # tasks -----------------------------------------------------------------
     def save_task(self, t: Task) -> None:
         self.conn.execute(
-            "INSERT OR REPLACE INTO tasks VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO tasks (id, name, command, required_gpus, estimated_seconds,"
+            " status, created_at, notes, config_path, fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 t.id,
                 t.name,
                 t.command,
                 t.required_gpus,
-                t.estimated_duration.total_seconds(),
+                t.estimated_duration.total_seconds() if t.estimated_duration else None,
                 t.status.value,
                 t.created_at.isoformat(),
                 t.notes,
                 t.config_path,
+                t.fingerprint,
             ),
         )
         self.conn.commit()
@@ -115,11 +140,13 @@ class SqliteStorage:
                 name=r["name"],
                 command=r["command"],
                 required_gpus=r["required_gpus"],
-                estimated_duration=timedelta(seconds=r["estimated_seconds"]),
+                estimated_duration=(timedelta(seconds=r["estimated_seconds"])
+                                    if r["estimated_seconds"] else None),
                 status=TaskStatus(r["status"]),
                 created_at=datetime.fromisoformat(r["created_at"]),
                 notes=r["notes"],
                 config_path=r["config_path"],
+                fingerprint=r["fingerprint"],
             )
             for r in rows
         ]
@@ -162,8 +189,8 @@ class SqliteStorage:
                     gpu_ids=tuple(json.loads(r["gpu_ids"])),
                     preferred_gpu_ids=tuple(json.loads(r["preferred_gpu_ids"])),
                     actual_gpu_ids=tuple(json.loads(actual)) if actual else None,
-                    planned_start=datetime.fromisoformat(r["planned_start"]),
-                    planned_end=datetime.fromisoformat(r["planned_end"]),
+                    planned_start=_dt(r["planned_start"]),
+                    planned_end=_dt(r["planned_end"]),
                     actual_start=_dt(r["actual_start"]),
                     actual_end=_dt(r["actual_end"]),
                     state=AssignmentState(r["state"]),

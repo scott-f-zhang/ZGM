@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ..models import Assignment, Task
 from .base import RunHandle, RunState
@@ -22,7 +22,9 @@ class MockRuntime:
     def submit(self, task: Task, assignment: Assignment) -> RunHandle:
         self._runs[assignment.id] = {
             "started": datetime.now(),
-            "seconds": task.estimated_duration.total_seconds() / self.speedup,
+            # no history: pretend it takes an hour (mock only)
+            "seconds": (task.estimated_duration or timedelta(hours=1)).total_seconds()
+            / self.speedup,
             "cancelled": False,
         }
         assignment.actual_start = datetime.now()

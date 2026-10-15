@@ -79,9 +79,14 @@ class GPUSchedulerApp(App):
         if a is None or a.state != AssignmentState.PLANNED:
             self.notify("Place the task on the timeline before running it.", severity="warning")
             return
+        self.refresh_fingerprint(task)  # the run uses the config as it is *now*
         handle = self.runtime.submit(task, a)
         a.state = AssignmentState.RUNNING
         a.actual_start = a.actual_start or datetime.now()
+        # remember the estimate the run started with (None = no history)
+        a.planned_start = a.actual_start
+        a.planned_end = (a.actual_start + task.estimated_duration
+                         if task.estimated_duration else None)
         self._runs[a.id] = handle
         task.status = TaskStatus.RUNNING
         self.store.update_task(task, quiet=True)
@@ -89,6 +94,55 @@ class GPUSchedulerApp(App):
         self.assignment_service.recompute()
         self.store.notify()
         self.notify(f"Started {task.name} via {self.runtime.name}")
+
+    def refresh_fingerprint(self, task: Task) -> None:
+        if not task.config_path:
+            return
+        try:
+            node = self.config_repo.get(task.config_path)
+        except KeyError:
+            return
+        if not node.error:
+            task.fingerprint = self.config_repo.params_fingerprint(node, task.required_gpus)
+            self.store.update_task(task, quiet=True)
+
+    def running_assignment(self, task: Task):
+        return next((a for a in self.store.assignments_for_task(task.id)
+                     if a.state == AssignmentState.RUNNING), None)
+
+    def stop_task(self, task: Task, requeue: bool) -> bool:
+        """End a running task: cancel it in the runtime, keep the partial run in
+        history, then put the task back in the queue or delete it."""
+        a = self.running_assignment(task)
+        if a is None:
+            return False
+        handle = self._runs.pop(a.id, None)
+        if handle is not None and self.runtime is not None:
+            self.runtime.cancel(handle)
+        a.state = AssignmentState.CANCELLED
+        a.actual_end = datetime.now()
+        self.store.save_assignment(a, "stopped")
+        if requeue:
+            task.status = TaskStatus.PENDING
+            self.store.update_task(task, quiet=True)
+        else:
+            self.store.remove_task(task.id)
+        self.assignment_service.recompute()
+        self.store.notify()
+        return True
+
+    def config_renamed(self, old: Path, new: Path) -> int:
+        """Point tasks created from a renamed config at its new file."""
+        count = 0
+        for t in self.store.tasks.values():
+            if t.config_path and Path(t.config_path) == old:
+                t.config_path = str(new)
+                t.command = t.command.replace(str(old), str(new))
+                self.store.update_task(t, quiet=True)
+                count += 1
+        if count:
+            self.store.notify()
+        return count
 
     def poll_runs(self) -> None:
         if not self._runs or self.runtime is None:

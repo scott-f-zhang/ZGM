@@ -8,7 +8,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 
-from ..models import Task, TaskStatus, format_duration
+from ..models import Task, TaskStatus, format_estimate
 from .palette import task_color
 
 STATUS_STYLE = {
@@ -69,7 +69,8 @@ class TaskCard(Widget):
         out.append(name + "\n", style="bold")
         out.append(f"GPU×{t.required_gpus}", style="magenta")
         out.append("  ")
-        out.append(f"⏱ {format_duration(t.estimated_duration)}\n")
+        known = t.estimated_duration is not None
+        out.append(f"⏱ {format_estimate(t)}\n", style="" if known else "dim italic")
         out.append(label, style=style)
         if t.config_path:
             out.append("  ⚙", style="dim")
