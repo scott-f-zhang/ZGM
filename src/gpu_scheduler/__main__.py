@@ -23,6 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="seed example tasks when the database is empty")
     p.add_argument("--runtime", choices=["none", "mock", "ray"], default="none",
                    help="execution backend for the 'r' key (default: none = planning only)")
+    p.add_argument("--card-width", type=int, default=24, metavar="N",
+                   help="width of queued task cards on the timeline (min 12, default 24)")
     p.add_argument("--ray-address", default=None, help="Ray cluster address (default: local)")
     return p
 
@@ -50,6 +52,7 @@ def main(argv: list[str] | None = None) -> None:
         demo=args.demo,
         runtime=runtime,
         command_template=args.command_template,
+        card_width=args.card_width,
     )
     app.run()
 

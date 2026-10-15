@@ -7,7 +7,7 @@ from rich.text import Text
 from textual import events
 from textual.widgets import Static
 
-VIEWS = [("schedule", "1", "Schedule 任务安排"), ("configs", "2", "Configs 配置管理")]
+VIEWS = [("schedule", "1", "Schedule"), ("configs", "2", "Configs")]
 
 
 class ViewTabs(Static):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import timedelta
+import random
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -8,103 +9,159 @@ from conftest import T0, make_task
 from gpu_scheduler.models import Assignment, AssignmentState, TaskStatus
 from gpu_scheduler.services import gpu_discovery
 from gpu_scheduler.services.gpu_discovery import MockGPUProvider, make_provider
+from gpu_scheduler.services.scheduler import ConflictValidator
 
 
-def test_assign_without_conflict(store, svc):
-    t = make_task(store)
-    res = svc.assign(t.id, [0], T0)
-    assert res.ok
-    assert res.assignment.planned_end == T0 + timedelta(hours=1)
-    assert store.tasks[t.id].status == TaskStatus.PLANNED
-    assert len(store.assignments) == 1
+def starts(svc, now=T0):
+    """task name -> (start, end) for the current queue, scheduled at ``now``."""
+    return {svc.store.tasks[s.task_id].name: (s.start, s.end) for s in svc.schedule(now)}
 
 
-def test_overlap_on_same_gpu_is_rejected_and_not_persisted(store, svc):
+def names(svc):
+    return [svc.store.tasks[a.task_id].name for a in svc.planned()]
+
+
+def test_append_starts_now_then_queues_behind(store, svc):
+    a, b = make_task(store, "a"), make_task(store, "b", hours=2)
+    assert svc.assign(a.id, [0]).ok
+    assert svc.assign(b.id, [0]).ok
+    s = starts(svc)
+    assert s["a"] == (T0, T0 + timedelta(hours=1))
+    assert s["b"] == (T0 + timedelta(hours=1), T0 + timedelta(hours=3))
+    assert store.tasks[a.id].status == TaskStatus.PLANNED
+
+
+def test_different_gpus_run_in_parallel(store, svc):
     a, b = make_task(store, "a"), make_task(store, "b")
-    assert svc.assign(a.id, [0], T0).ok
-    res = svc.assign(b.id, [0], T0 + timedelta(minutes=30))
-    assert not res.ok
-    assert [c.task_id for c in res.conflicts] == [a.id]
-    assert "a" in res.message
-    assert len(store.assignments) == 1
-    assert store.tasks[b.id].status == TaskStatus.PENDING
+    svc.assign(a.id, [0])
+    svc.assign(b.id, [1])
+    s = starts(svc)
+    assert s["a"][0] == s["b"][0] == T0
 
 
-def test_adjacent_intervals_are_allowed(store, svc):
-    a, b = make_task(store, "a"), make_task(store, "b")
-    assert svc.assign(a.id, [0], T0).ok
-    assert svc.assign(b.id, [0], T0 + timedelta(hours=1)).ok
+def test_multi_gpu_waits_for_latest_gpu(store, svc):
+    a, b = make_task(store, "a", hours=1), make_task(store, "b", hours=3)
+    c = make_task(store, "c", gpus=2)
+    svc.assign(a.id, [0])
+    svc.assign(b.id, [1])
+    svc.assign(c.id, [0, 1])
+    assert starts(svc)["c"][0] == T0 + timedelta(hours=3)
 
 
-def test_different_gpu_is_fine(store, svc):
-    a, b = make_task(store, "a"), make_task(store, "b")
-    assert svc.assign(a.id, [0], T0).ok
-    assert svc.assign(b.id, [1], T0).ok
+def test_insert_at_position_shifts_later_work(store, svc):
+    a, b, c = (make_task(store, n) for n in "abc")
+    svc.assign(a.id, [0])
+    svc.assign(b.id, [0])
+    assert svc.assign(c.id, [0], position=0).ok
+    assert names(svc) == ["c", "a", "b"]
+    s = starts(svc)
+    assert s["c"][0] == T0 and s["a"][0] == T0 + timedelta(hours=1)
+    assert [a.seq for a in svc.planned()] == [0, 1, 2]
 
 
-def test_multi_gpu_needs_exact_count(store, svc):
-    t = make_task(store, gpus=2)
-    assert not svc.assign(t.id, [0], T0).ok
-    assert not svc.assign(t.id, [0, 0], T0).ok
-    assert not svc.assign(t.id, [0, 9], T0).ok
-    res = svc.assign(t.id, [2, 1], T0)
-    assert res.ok and res.assignment.gpu_ids == (1, 2)
-
-
-def test_multi_gpu_conflicts_if_any_row_overlaps(store, svc):
-    a, b = make_task(store, "a"), make_task(store, "b", gpus=2)
-    assert svc.assign(a.id, [1], T0).ok
-    res = svc.assign(b.id, [0, 1], T0 + timedelta(minutes=15))
-    assert not res.ok
-    assert svc.assign(b.id, [2, 3], T0 + timedelta(minutes=15)).ok
-
-
-def test_move_excludes_self_and_reassign_moves(store, svc):
-    t = make_task(store, hours=2)
-    a = svc.assign(t.id, [0], T0).assignment
-    # overlaps its own old slot: fine
-    res = svc.move(a.id, [0], T0 + timedelta(hours=1))
-    assert res.ok and store.assignments[a.id].planned_start == T0 + timedelta(hours=1)
+def test_move_reorders_and_changes_gpu(store, svc):
+    a, b, c = (make_task(store, n) for n in "abc")
+    for t in (a, b, c):
+        svc.assign(t.id, [0])
+    aid = store.active_assignment(c.id).id
+    assert svc.move(aid, [0], 0).ok
+    assert names(svc) == ["c", "a", "b"]
+    assert svc.move(aid, [2], 2).ok
+    assert names(svc) == ["a", "b", "c"]
+    s = starts(svc)
+    assert s["c"][0] == T0  # alone on GPU 2
     # assign() on an already-planned task moves rather than duplicating
-    res = svc.assign(t.id, [3], T0)
-    assert res.ok and len(store.assignments) == 1
-    assert store.assignments[a.id].gpu_ids == (3,)
+    assert svc.assign(c.id, [1], 0).ok
+    assert len(store.assignments) == 3 and names(svc)[0] == "c"
 
 
-def test_unassign_restores_pending(store, svc):
-    t = make_task(store)
-    a = svc.assign(t.id, [0], T0).assignment
-    assert svc.unassign(a.id).ok
-    assert store.tasks[t.id].status == TaskStatus.PENDING
+def test_shift(store, svc):
+    a, b, c = (make_task(store, n) for n in "abc")
+    for t in (a, b, c):
+        svc.assign(t.id, [0])
+    svc.shift(store.active_assignment(c.id).id, -1)
+    assert names(svc) == ["a", "c", "b"]
+    svc.shift(store.active_assignment(a.id).id, +5)
+    assert names(svc) == ["c", "b", "a"]
+
+
+def test_unassign_pulls_later_work_forward(store, svc):
+    a, b = make_task(store, "a"), make_task(store, "b")
+    svc.assign(a.id, [0])
+    svc.assign(b.id, [0])
+    assert svc.unassign(store.active_assignment(a.id).id).ok
+    assert store.tasks[a.id].status == TaskStatus.PENDING
+    assert starts(svc)["b"][0] == T0
+    assert [x.seq for x in svc.planned()] == [0]
+
+
+def test_running_work_blocks_its_gpus(store, svc):
+    a, b = make_task(store, "a", hours=2), make_task(store, "b")
+    run = Assignment(a.id, (0,), T0, T0 + timedelta(hours=2), actual_start=T0,
+                     state=AssignmentState.RUNNING)
+    store.save_assignment(run, "started")
+    svc.assign(b.id, [0])
+    assert starts(svc, T0)["b"][0] == T0 + timedelta(hours=2)
+    # overrunning: queued work waits until "now"
+    late = T0 + timedelta(hours=5)
+    assert starts(svc, late)["b"][0] == late
+    kinds = [s.kind for s in svc.schedule(T0)]
+    assert kinds == ["running", "planned"]
+
+
+def test_shape_errors_are_refused(store, svc):
+    t = make_task(store, gpus=2)
+    for gpus in ([0], [0, 0], [0, 9]):
+        res = svc.assign(t.id, gpus)
+        assert not res.ok and res.error
     assert not store.assignments
+    assert svc.assign(t.id, [2, 1]).assignment.gpu_ids == (1, 2)
 
 
-def test_cancelled_assignments_do_not_conflict(store, svc):
+def test_completed_task_cannot_be_planned(store, svc):
+    t = make_task(store)
+    t.status = TaskStatus.COMPLETED
+    assert not svc.assign(t.id, [0]).ok
+
+
+def test_preview_does_not_persist(store, svc):
     a, b = make_task(store, "a"), make_task(store, "b")
-    asg = svc.assign(a.id, [0], T0).assignment
-    asg.state = AssignmentState.CANCELLED
-    assert svc.assign(b.id, [0], T0).ok
+    svc.assign(a.id, [0])
+    slots, ghost = svc.preview(b.id, [0], 0, now=T0)
+    assert ghost.start == T0 and [s.kind for s in slots] == ["ghost", "planned"]
+    assert slots[1].start == T0 + timedelta(hours=1)
+    assert len(store.assignments) == 1
 
 
-def test_history_uses_actual_times(store, svc):
-    """A completed run that overran its estimate blocks the real interval."""
-    a, b = make_task(store, "a"), make_task(store, "b")
-    done = Assignment(a.id, (0,), T0, T0 + timedelta(hours=1),
-                      actual_start=T0, actual_end=T0 + timedelta(hours=3),
-                      state=AssignmentState.COMPLETED)
-    store.save_assignment(done, "completed")
-    assert not svc.assign(b.id, [0], T0 + timedelta(hours=2)).ok
-    assert svc.assign(b.id, [0], T0 + timedelta(hours=3)).ok
+def test_suggest_gpus(store, svc):
+    t2, t4 = make_task(store, gpus=2), make_task(store, gpus=4)
+    assert svc.suggest_gpus(t2, 1) == (1, 2)
+    assert svc.suggest_gpus(t2, 3) == (2, 3)  # clamped to fit
+    assert svc.suggest_gpus(t4, 2) == (0, 1, 2, 3)
 
 
-def test_next_free_slot_and_suggest(store, svc):
-    a, b = make_task(store, "a"), make_task(store, "b", gpus=2)
-    svc.assign(a.id, [0], T0)
-    assert svc.next_free_slot([0], T0, timedelta(hours=1)) == T0 + timedelta(hours=1)
-    assert svc.next_free_slot([1], T0, timedelta(hours=1)) == T0
-    # anchor 0 is busy at T0 for 2-GPU task window (0,1) -> falls back to anchor+free
-    assert svc.suggest_gpus(store.tasks[b.id], 3, T0) == (2, 3)
-    assert svc.suggest_gpus(store.tasks[b.id], 1, T0) == (1, 2)
+def test_random_operations_never_overlap(store, svc):
+    rng = random.Random(7)
+    tasks = [make_task(store, f"t{i}", gpus=rng.choice([1, 1, 2, 4]), hours=rng.choice([1, 2, 3]))
+             for i in range(12)]
+    for _ in range(80):
+        t = rng.choice(tasks)
+        op = rng.random()
+        a = store.active_assignment(t.id)
+        if op < 0.6:
+            first = rng.randrange(0, 5 - t.required_gpus)
+            svc.assign(t.id, list(range(first, first + t.required_gpus)),
+                       rng.randrange(0, len(svc.planned()) + 1))
+        elif a is not None and op < 0.8:
+            svc.unassign(a.id)
+        elif a is not None:
+            svc.shift(a.id, rng.choice([-2, -1, 1, 2]))
+    svc.recompute(T0)
+    planned = svc.planned()
+    assert [a.seq for a in planned] == list(range(len(planned)))
+    v = ConflictValidator()
+    for a in planned:
+        assert not v.find_conflicts(a, planned, T0)
 
 
 def test_planned_assignment_persists(tmp_path):
@@ -114,16 +171,20 @@ def test_planned_assignment_persists(tmp_path):
 
     db = tmp_path / "s.db"
     store = TaskStore(SqliteStorage(db))
-    t = make_task(store, gpus=2)
-    AssignmentService(store, range(4)).assign(t.id, [1, 2], T0)
+    svc = AssignmentService(store, range(4))
+    t, u = make_task(store, "t", gpus=2), make_task(store, "u")
+    svc.assign(t.id, [1, 2])
+    svc.assign(u.id, [1], 0)
     store.storage.close()
 
     again = TaskStore(SqliteStorage(db))
-    (a,) = again.assignments.values()
-    assert a.gpu_ids == (1, 2) and a.planned_start == T0 and a.actual_end is None
+    svc2 = AssignmentService(again, range(4))
+    assert names(svc2) == ["u", "t"]
+    a = again.active_assignment(t.id)
+    assert a.gpu_ids == (1, 2) and a.actual_end is None
     assert again.tasks[t.id].status == TaskStatus.PLANNED
     events = [h["event"] for h in again.storage.history(t.id)]
-    assert events == ["task_created", "assigned"]
+    assert events[:2] == ["task_created", "assigned"]
 
 
 def test_gpu_discovery_falls_back_to_mock(monkeypatch):
@@ -134,8 +195,7 @@ def test_gpu_discovery_falls_back_to_mock(monkeypatch):
     monkeypatch.setattr(gpu_discovery, "NVMLProvider", boom)
     provider = make_provider()
     assert isinstance(provider, MockGPUProvider)
-    gpus = provider.discover()
-    assert [g.id for g in gpus] == [0, 1, 2, 3]
+    assert [g.id for g in provider.discover()] == [0, 1, 2, 3]
 
 
 def test_mock_gpu_count_override(monkeypatch):
@@ -147,3 +207,11 @@ def test_mock_gpu_count_override(monkeypatch):
 def test_invalid_assignment_interval():
     with pytest.raises(ValueError):
         Assignment("x", (0,), T0, T0)
+
+
+def test_validator_detects_overlap():
+    a = Assignment("a", (0,), T0, T0 + timedelta(hours=2))
+    b = Assignment("b", (0, 1), T0 + timedelta(hours=1), T0 + timedelta(hours=3))
+    c = Assignment("c", (0,), T0 + timedelta(hours=2), T0 + timedelta(hours=3))
+    v = ConflictValidator()
+    assert v.find_conflicts(a, [b, c], datetime(2000, 1, 1)) == [b]

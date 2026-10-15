@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..models import Assignment, AssignmentState, Task, TaskStatus
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS assignments (
     planned_end TEXT NOT NULL,
     actual_start TEXT,
     actual_end TEXT,
-    state TEXT NOT NULL
+    state TEXT NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS history (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,10 +67,19 @@ class SqliteStorage:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
-        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        if version == 0:
-            self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        self._migrate()
+        self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(assignments)")}
+        if "seq" not in cols:  # v1 -> v2: planned work becomes an ordered queue
+            self.conn.execute("ALTER TABLE assignments ADD COLUMN seq INTEGER NOT NULL DEFAULT 0")
+            rows = self.conn.execute(
+                "SELECT id FROM assignments WHERE state='planned' ORDER BY planned_start"
+            ).fetchall()
+            for i, r in enumerate(rows):
+                self.conn.execute("UPDATE assignments SET seq=? WHERE id=?", (i, r["id"]))
 
     def close(self) -> None:
         self.conn.close()
@@ -117,7 +127,9 @@ class SqliteStorage:
     # assignments -----------------------------------------------------------
     def save_assignment(self, a: Assignment) -> None:
         self.conn.execute(
-            "INSERT OR REPLACE INTO assignments VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO assignments (id, task_id, gpu_ids, preferred_gpu_ids,"
+            " actual_gpu_ids, planned_start, planned_end, actual_start, actual_end, state, seq)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 a.id,
                 a.task_id,
@@ -129,6 +141,7 @@ class SqliteStorage:
                 _iso(a.actual_start),
                 _iso(a.actual_end),
                 a.state.value,
+                a.seq,
             ),
         )
         self.conn.commit()
@@ -138,7 +151,7 @@ class SqliteStorage:
         self.conn.commit()
 
     def load_assignments(self) -> list[Assignment]:
-        rows = self.conn.execute("SELECT * FROM assignments ORDER BY planned_start").fetchall()
+        rows = self.conn.execute("SELECT * FROM assignments ORDER BY seq, planned_start").fetchall()
         out = []
         for r in rows:
             actual = r["actual_gpu_ids"]
@@ -154,6 +167,7 @@ class SqliteStorage:
                     actual_start=_dt(r["actual_start"]),
                     actual_end=_dt(r["actual_end"]),
                     state=AssignmentState(r["state"]),
+                    seq=r["seq"],
                 )
             )
         return out

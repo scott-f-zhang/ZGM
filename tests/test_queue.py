@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 
-from conftest import T0, make_task
+from conftest import make_task
 from gpu_scheduler.models import Task, TaskStatus, format_duration, parse_duration
 from gpu_scheduler.services.task_store import TaskStore, seed_demo
 from gpu_scheduler.storage.sqlite import SqliteStorage
@@ -27,14 +27,14 @@ def test_add_remove_round_trip(tmp_path):
 
 def test_remove_task_drops_assignments(store, svc):
     t = make_task(store)
-    svc.assign(t.id, [0], T0)
+    svc.assign(t.id, [0])
     store.remove_task(t.id)
     assert not store.assignments
 
 
 def test_ordering_puts_unscheduled_first(store, svc):
     a, b = make_task(store, "a"), make_task(store, "b")
-    svc.assign(a.id, [0], T0)
+    svc.assign(a.id, [0])
     assert [t.name for t in store.ordered_tasks()] == ["b", "a"]
 
 
@@ -78,3 +78,35 @@ def test_seed_demo_is_consistent(store):
     assert len(planned) == 3
     seed_demo(store)  # idempotent on a non-empty store
     assert len(store.tasks) == 7
+
+
+def test_migrates_v1_database(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "v1.db"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE tasks (id TEXT PRIMARY KEY, name TEXT NOT NULL, command TEXT NOT NULL,
+            required_gpus INTEGER NOT NULL, estimated_seconds REAL NOT NULL, status TEXT NOT NULL,
+            created_at TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', config_path TEXT);
+        CREATE TABLE assignments (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, gpu_ids TEXT NOT NULL,
+            preferred_gpu_ids TEXT NOT NULL, actual_gpu_ids TEXT, planned_start TEXT NOT NULL,
+            planned_end TEXT NOT NULL, actual_start TEXT, actual_end TEXT, state TEXT NOT NULL);
+        PRAGMA user_version = 1;
+    """)
+    for tid, start in (("late", "2030-01-01T12:00:00"), ("early", "2030-01-01T09:00:00")):
+        conn.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?)",
+                     (tid, tid, "echo", 1, 3600, "planned", "2030-01-01T00:00:00", "", None))
+        conn.execute("INSERT INTO assignments VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     ("a-" + tid, tid, "[0]", "[0]", None, start,
+                      start.replace("T09", "T10").replace("T12", "T13"), None, None, "planned"))
+    conn.commit()
+    conn.close()
+
+    from gpu_scheduler.services.scheduler import AssignmentService
+
+    store = TaskStore(SqliteStorage(db))
+    svc = AssignmentService(store, range(4))
+    assert [a.task_id for a in svc.planned()] == ["early", "late"]
+    assert [a.seq for a in svc.planned()] == [0, 1]
+    assert store.storage.conn.execute("PRAGMA user_version").fetchone()[0] == 2

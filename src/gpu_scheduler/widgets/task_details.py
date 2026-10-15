@@ -57,8 +57,8 @@ class TaskDetails(Static):
         if active:
             a = active[0]
             grid.add_row(
-                "Planned",
-                f"{_fmt(a.planned_start)} → {_fmt(a.planned_end)}",
+                "Planned" if not a.actual_start else "Expected",
+                f"~{_fmt(a.planned_start)} → ~{_fmt(a.planned_end)} (estimate)",
                 "GPU pref / actual",
                 f"{_gpus(a.preferred_gpu_ids)} / {_gpus(a.actual_gpu_ids)}",
             )
