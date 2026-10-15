@@ -590,4 +590,9 @@ async def test_run_reports_launch_errors(config_dir, tmp_path):
         await pilot.pause()
         await pilot.press("tab", "r")
         await pilot.pause()
-        assert app.store.tasks[t.id].status == TaskStatus.PLANNED  # nothing started
+        # nothing started: back in the waiting queue as failed, off the timeline
+        assert app.store.tasks[t.id].status == TaskStatus.FAILED
+        assert app.store.active_assignment(t.id) is None
+        assert t in app.store.waiting_tasks()
+        events = [e["event"] for e in app.store.storage.history(t.id)]
+        assert "launch_failed" in events

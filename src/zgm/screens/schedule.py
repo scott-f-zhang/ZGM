@@ -52,7 +52,8 @@ class ScheduleScreen(Screen):
         Binding("n", "new_task", "New task"),
         Binding("e", "edit_task", "Edit/rename"),
         Binding("d", "delete_task", "Delete task"),
-        Binding("r", "run", "Run", show=False),
+        Binding("r", "run", "Run now", show=False),
+        Binding("p", "toggle_autostart", "Auto-start"),
         Binding("s", "stop", "Stop"),
         Binding("tab", "toggle_focus", "Queue⇄Timeline"),
     ]
@@ -178,6 +179,13 @@ class ScheduleScreen(Screen):
             if not ok:
                 msg.append(f"   ✗ {p.result.message}", style="red")
         else:
+            if self.app.runtime is not None:
+                if self.app.autostart:
+                    msg.append(" AUTO ▶ ", style="bold #0b0f19 on #22c55e")
+                else:
+                    msg.append(" PAUSED ‖ ", style="bold #0b0f19 on #f59e0b")
+                msg.append(f" {self.app.runtime.name} · p toggles · r runs now ",
+                           style="dim")
             msg.append(
                 " Tab queue⇄timeline · a assign · Enter pick up · [ ] reorder · u unassign · "
                 "e edit/rename · s stop · "
@@ -416,8 +424,14 @@ class ScheduleScreen(Screen):
              ("keep", "Keep running", "default")],
         ), done)
 
+    def action_toggle_autostart(self) -> None:
+        self.app.set_autostart(not self.app.autostart)
+        self.notify("Auto-start on: queued tasks start as their GPUs free up"
+                    if self.app.autostart else "Auto-start paused: nothing new starts until p")
+        self.refresh_status()
+
     def check_action(self, action: str, parameters) -> bool | None:
-        if action == "run":
+        if action in ("run", "toggle_autostart"):
             return self.app.runtime is not None
         return True
 

@@ -24,6 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--runtime", choices=["none", "local", "mock", "ray"], default="none",
                    help="execution backend for the 'r' key: local = child processes on "
                         "this machine (default: none = planning only)")
+    p.add_argument("--no-autostart", dest="autostart", action="store_false",
+                   help="with a runtime, don't start queued tasks when their GPUs free up; "
+                        "start them with r, or turn auto-start on with p")
     p.add_argument("--log-dir", default=None,
                    help="where the local runtime writes task logs "
                         "(default: logs/ next to the database)")
@@ -63,6 +66,7 @@ def main(argv: list[str] | None = None) -> None:
         runtime=runtime,
         command_template=args.command_template,
         card_width=args.card_width,
+        autostart=args.autostart,
     )
     app.run()
 

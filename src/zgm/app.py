@@ -41,6 +41,7 @@ class ZGMApp(App):
         command_template: str = DEFAULT_COMMAND_TEMPLATE,
         stats_interval: float = 2.0,
         card_width: int = DEFAULT_CARD_WIDTH,
+        autostart: bool = True,
     ) -> None:
         super().__init__()
         self.provider = make_provider(mock_gpus)
@@ -53,6 +54,7 @@ class ZGMApp(App):
         self.config_repo = ConfigRepository(config_dir)
         self.command_template = command_template
         self.runtime = runtime
+        self.autostart = autostart  # start queued work as GPUs free up (needs a runtime)
         self.stats_interval = stats_interval
         self.card_width = max(MIN_CARD_WIDTH, card_width)
         self.assignment_service.recompute()  # "now" moved since the plan was saved
@@ -60,31 +62,78 @@ class ZGMApp(App):
 
     def on_mount(self) -> None:
         self.theme = "textual-dark"
+        orphans = [a for a in self.assignment_service.running() if a.id not in self._runs]
+        if orphans and self.runtime is not None:
+            names = ", ".join(self.store.tasks[a.task_id].name for a in orphans
+                              if a.task_id in self.store.tasks)
+            self.notify(f"Still marked running from an earlier session: {names}. zgm no "
+                        "longer tracks them; stop them (s) to free their GPUs.",
+                        severity="warning", timeout=20)
         if self.stats_interval:
             self.set_interval(self.stats_interval, self.tick)
 
     def tick(self) -> None:
         self.provider.refresh(self.gpus)
         self.poll_runs()
+        self.dispatch()
         self.assignment_service.recompute(persist=False)  # queued starts follow "now"
         screen = self.screen
         if isinstance(screen, ScheduleScreen) and screen.is_mounted:
             screen.refresh_timeline()
 
-    # execution (phase-2 hook; off unless --runtime is given) ---------------
+    # execution (off unless --runtime is given) ------------------------------
+    def dispatch(self) -> list[Task]:
+        """Start every planned task whose GPUs are free, in queue order.
+
+        Paused with ``p`` (``autostart``), and while a card is being placed so
+        nothing starts out from under the user."""
+        if self.runtime is None or not self.autostart:
+            return []
+        screen = self.screen
+        if isinstance(screen, ScheduleScreen) and screen.placement is not None:
+            return []
+        started = []
+        for a in self.assignment_service.ready_to_start():
+            task = self.store.tasks[a.task_id]
+            if self.start_assignment(task, a):
+                started.append(task)
+        if started:
+            names = ", ".join(t.name for t in started)
+            self.notify(f"Started {names}", title="Auto-start")
+        return started
+
+    def set_autostart(self, on: bool) -> None:
+        self.autostart = on
+        if on:
+            self.dispatch()
+
     def run_selected(self, task: Task | None) -> None:
+        """``r``: start this task now, ahead of the queue, if its GPUs are free."""
         if self.runtime is None or task is None:
             return
         a = self.store.active_assignment(task.id)
         if a is None or a.state != AssignmentState.PLANNED:
             self.notify("Place the task on the timeline before running it.", severity="warning")
             return
+        busy = sorted(set(a.gpu_ids) & self.assignment_service.busy_gpus())
+        if busy:
+            self.notify(f"GPU {','.join(map(str, busy))} is busy; it starts when free"
+                        + ("" if self.autostart else " (auto-start is paused: p)"),
+                        severity="warning")
+            return
+        if self.start_assignment(task, a):
+            self.notify(f"Started {task.name} via {self.runtime.name}")
+
+    def start_assignment(self, task: Task, a) -> bool:
+        """Hand a planned assignment to the runtime. If it can't start (bad
+        working dir, missing python/conda env, ...), the task goes back to the
+        waiting queue as failed so it doesn't hold up the work behind it."""
         self.refresh_fingerprint(task)  # the run uses the config as it is *now*
         try:
             handle = self.runtime.submit(task, a)
-        except Exception as e:  # bad working dir, missing python/conda env, ...
-            self.notify(f"Could not start {task.name}: {e}", severity="error", timeout=10)
-            return
+        except Exception as e:
+            self.launch_failed(task, a, e)
+            return False
         a.state = AssignmentState.RUNNING
         a.actual_start = a.actual_start or datetime.now()
         # remember the estimate the run started with (None = no history)
@@ -97,7 +146,16 @@ class ZGMApp(App):
         self.store.save_assignment(a, "started")
         self.assignment_service.recompute()
         self.store.notify()
-        self.notify(f"Started {task.name} via {self.runtime.name}")
+        return True
+
+    def launch_failed(self, task: Task, a, error: Exception) -> None:
+        self.assignment_service.unassign(a.id)
+        task.status = TaskStatus.FAILED
+        self.store.update_task(task, quiet=True)
+        self.store.storage.log_event("launch_failed", task.id, a.id, {"error": str(error)})
+        self.store.notify()
+        self.notify(f"{task.name} could not start: {error}. It is back in the queue.",
+                    severity="error", timeout=15)
 
     def log_path(self, task: Task) -> Path | None:
         """The log of the task's latest run, if the runtime writes log files."""
