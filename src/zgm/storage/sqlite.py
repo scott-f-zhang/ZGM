@@ -7,9 +7,9 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..models import Assignment, AssignmentState, Task, TaskStatus
+from ..models import Assignment, AssignmentState, LaunchSpec, Task, TaskStatus
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # planned times and estimates are nullable: no run history means "unknown"
 TABLES = {
@@ -23,7 +23,8 @@ TABLES = {
     created_at TEXT NOT NULL,
     notes TEXT NOT NULL DEFAULT '',
     config_path TEXT,
-    fingerprint TEXT NOT NULL DEFAULT ''
+    fingerprint TEXT NOT NULL DEFAULT '',
+    launch TEXT
 )""",
     "assignments": """CREATE TABLE assignments (
     id TEXT PRIMARY KEY,
@@ -111,7 +112,8 @@ class SqliteStorage:
     def save_task(self, t: Task) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO tasks (id, name, command, required_gpus, estimated_seconds,"
-            " status, created_at, notes, config_path, fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " status, created_at, notes, config_path, fingerprint, launch)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 t.id,
                 t.name,
@@ -123,6 +125,7 @@ class SqliteStorage:
                 t.notes,
                 t.config_path,
                 t.fingerprint,
+                json.dumps(t.launch.to_dict()) if t.launch else None,
             ),
         )
         self.conn.commit()
@@ -147,6 +150,7 @@ class SqliteStorage:
                 notes=r["notes"],
                 config_path=r["config_path"],
                 fingerprint=r["fingerprint"],
+                launch=LaunchSpec.from_dict(json.loads(r["launch"])) if r["launch"] else None,
             )
             for r in rows
         ]

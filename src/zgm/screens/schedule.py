@@ -162,7 +162,8 @@ class ScheduleScreen(Screen):
             note = Text(f"✗ {self.preview.result.message}", style="bold red")
         elif self.last_error:
             note = Text(f"✗ {self.last_error}", style="red")
-        details.show(task, self.store.assignments_for_task(task.id) if task else [], note)
+        details.show(task, self.store.assignments_for_task(task.id) if task else [], note,
+                     log=self.app.log_path(task) if task else None)
 
     def refresh_status(self) -> None:
         msg = Text()
@@ -375,15 +376,16 @@ class ScheduleScreen(Screen):
         def done(values) -> None:
             if not values:
                 return
-            name, command, gpus = values
-            before = (task.name, task.command, task.required_gpus, task.fingerprint)
-            apply_task_edit(task, name, command, gpus)
+            name, spec, gpus = values
+            before = (task.name, task.command, task.launch, task.required_gpus, task.fingerprint)
+            apply_task_edit(task, name, spec, gpus)
             a = self.store.active_assignment(task.id)
             if a is not None and a.state == AssignmentState.PLANNED and gpus != len(a.gpu_ids):
                 # keep its queue position but give it the new number of GPUs
                 res = self.svc.move(a.id, self.svc.suggest_gpus(task, a.gpu_ids[0]))
                 if not res.ok:
-                    task.name, task.command, task.required_gpus, task.fingerprint = before
+                    (task.name, task.command, task.launch, task.required_gpus,
+                     task.fingerprint) = before
                     self.notify(f"Not saved: {res.message}", severity="error")
                     return
             self.store.update_task(task)

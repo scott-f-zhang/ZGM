@@ -11,7 +11,7 @@ from typing import Any
 
 from ruamel.yaml.comments import CommentedMap
 
-from ..models import ConfigNode, Task, config_fingerprint
+from ..models import ConfigNode, LaunchSpec, Task, config_fingerprint
 from . import config_loader as cl
 
 DEFAULT_COMMAND_TEMPLATE = "python train.py --config {path}"
@@ -239,6 +239,24 @@ class ConfigRepository:
         params = {k: v for k, v in node.resolved.items() if k != cl.SCHEDULER_KEY}
         return config_fingerprint(params, gpus)
 
+    def launch_spec(self, node: ConfigNode,
+                    template: str = DEFAULT_COMMAND_TEMPLATE) -> LaunchSpec:
+        """How a task for ``node`` starts: its (inherited) ``_scheduler_.run``
+        block, or else ``template`` as a shell command. A relative ``run.cwd`` is
+        relative to the config file's directory; the default is zgm's own."""
+        meta = node.resolved.get(cl.SCHEDULER_KEY) or {}
+        run = meta.get("run")
+        if run is None:
+            return LaunchSpec(command=template.format(path=quote_path(str(node.path)),
+                                                      name=node.name))
+        try:
+            spec = LaunchSpec.from_dict(dict(run) if isinstance(run, dict) else run)
+        except ValueError as e:
+            raise ValueError(f"{cl.SCHEDULER_KEY}.run: {e}") from None
+        cwd = Path(spec.cwd).expanduser() if spec.cwd else Path.cwd()
+        spec.cwd = str((node.path.parent / cwd).resolve())
+        return spec
+
     def make_task(self, node: ConfigNode, template: str = DEFAULT_COMMAND_TEMPLATE) -> Task:
         """A task for ``node``. Its estimate comes from past runs of the same
         parameters, never from the config itself."""
@@ -246,10 +264,9 @@ class ConfigRepository:
             raise ValueError(node.error)
         meta = node.resolved.get(cl.SCHEDULER_KEY) or {}
         gpus = int(meta.get("gpus", 1))
-        command = template.format(path=quote_path(str(node.path)), name=node.name)
         return Task(
             name=str(meta.get("name", node.name)),
-            command=command,
+            launch=self.launch_spec(node, template),
             required_gpus=gpus,
             config_path=str(node.path),
             fingerprint=self.params_fingerprint(node, gpus),

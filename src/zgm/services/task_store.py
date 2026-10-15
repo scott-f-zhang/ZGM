@@ -136,7 +136,7 @@ def add_completed_run(
     """Record a finished run of the same workload as ``template`` (demo/tests)."""
     done = Task(name or template.name, template.command, template.required_gpus,
                 status=TaskStatus.COMPLETED, fingerprint=template.fingerprint,
-                config_path=template.config_path)
+                config_path=template.config_path, launch=template.launch)
     done.created_at = start - timedelta(minutes=5)
     store.add_task(done)
     store.save_assignment(Assignment(
