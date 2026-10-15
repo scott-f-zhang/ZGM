@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "gpu-scheduler"
+name = "zgm"
 version = "0.1.0"
 description = "A btop-style terminal UI for planning local GPU tasks on a timeline"
 readme = "README.md"
@@ -19,10 +19,10 @@ ray = ["ray>=2.59"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [project.scripts]
-gpu-scheduler = "gpu_scheduler.__main__:main"
+zgm = "zgm.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/gpu_scheduler"]
+packages = ["src/zgm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

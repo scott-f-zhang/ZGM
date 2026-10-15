@@ -50,7 +50,7 @@ TABLES = {
 
 
 def default_db_path() -> Path:
-    return Path.home() / ".local" / "share" / "gpu-scheduler" / "state.db"
+    return Path.home() / ".local" / "share" / "zgm" / "state.db"
 
 
 def _dt(s: str | None) -> datetime | None:

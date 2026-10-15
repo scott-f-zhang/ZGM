@@ -1,4 +1,4 @@
-"""Command-line entry point: ``gpu-scheduler`` or ``python -m gpu_scheduler``."""
+"""Command-line entry point: ``zgm`` or ``python -m zgm``."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from .storage.sqlite import SqliteStorage, default_db_path
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="gpu-scheduler", description=__doc__)
+    p = argparse.ArgumentParser(prog="zgm", description=__doc__)
     p.add_argument("--db", default=str(default_db_path()),
                    help="SQLite file for tasks/plans/history (default: %(default)s)")
     p.add_argument("--mock-gpus", type=int, default=None, metavar="N",
-                   help="use N fake GPUs instead of NVML (also: GPU_SCHEDULER_MOCK_GPUS)")
+                   help="use N fake GPUs instead of NVML (also: ZGM_MOCK_GPUS)")
     p.add_argument("--config-dir", default="configs",
                    help="directory of experiment YAML configs (default: ./configs)")
     p.add_argument("--command-template", default=DEFAULT_COMMAND_TEMPLATE,
@@ -41,11 +41,11 @@ def main(argv: list[str] | None = None) -> None:
 
         runtime = RayRuntime(address=args.ray_address)
         if not runtime.available():
-            raise SystemExit("ray is not installed: pip install 'gpu-scheduler[ray]'")
+            raise SystemExit("ray is not installed: pip install 'zgm[ray]'")
 
-    from .app import GPUSchedulerApp
+    from .app import ZGMApp
 
-    app = GPUSchedulerApp(
+    app = ZGMApp(
         storage=SqliteStorage(args.db),
         mock_gpus=args.mock_gpus,
         config_dir=args.config_dir,

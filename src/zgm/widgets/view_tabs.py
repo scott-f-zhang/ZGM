@@ -17,7 +17,7 @@ class ViewTabs(Static):
 
     def render(self) -> Text:
         out = Text(no_wrap=True)
-        out.append(" gpu-scheduler ", style="bold #0b0f19 on #60a5fa")
+        out.append(" ZGM ", style="bold #0b0f19 on #60a5fa")
         out.append("  ")
         for mode, key, label in VIEWS:
             if mode == self.active:
@@ -32,7 +32,7 @@ class ViewTabs(Static):
     def on_click(self, event: events.Click) -> None:
         # click a tab to switch views
         x = event.x
-        pos = len(" gpu-scheduler ") + 2
+        pos = len(" ZGM ") + 2
         for mode, key, label in VIEWS:
             w = cell_len(f" {key} ") + cell_len(f" {label} ")
             if pos <= x < pos + w:

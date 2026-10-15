@@ -6,10 +6,10 @@ from datetime import datetime, timedelta
 import pytest
 
 from conftest import T0, make_task, planned_count
-from gpu_scheduler.models import Assignment, AssignmentState, TaskStatus
-from gpu_scheduler.services import gpu_discovery
-from gpu_scheduler.services.gpu_discovery import MockGPUProvider, make_provider
-from gpu_scheduler.services.scheduler import ConflictValidator
+from zgm.models import Assignment, AssignmentState, TaskStatus
+from zgm.services import gpu_discovery
+from zgm.services.gpu_discovery import MockGPUProvider, make_provider
+from zgm.services.scheduler import ConflictValidator
 
 
 def starts(svc, now=T0):
@@ -165,9 +165,9 @@ def test_random_operations_never_overlap(store, svc):
 
 
 def test_planned_assignment_persists(tmp_path):
-    from gpu_scheduler.services.scheduler import AssignmentService
-    from gpu_scheduler.services.task_store import TaskStore
-    from gpu_scheduler.storage.sqlite import SqliteStorage
+    from zgm.services.scheduler import AssignmentService
+    from zgm.services.task_store import TaskStore
+    from zgm.storage.sqlite import SqliteStorage
 
     db = tmp_path / "s.db"
     store = TaskStore(SqliteStorage(db))
@@ -191,7 +191,7 @@ def test_gpu_discovery_falls_back_to_mock(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("no NVML")
 
-    monkeypatch.delenv("GPU_SCHEDULER_MOCK_GPUS", raising=False)
+    monkeypatch.delenv("ZGM_MOCK_GPUS", raising=False)
     monkeypatch.setattr(gpu_discovery, "NVMLProvider", boom)
     provider = make_provider()
     assert isinstance(provider, MockGPUProvider)
@@ -199,7 +199,7 @@ def test_gpu_discovery_falls_back_to_mock(monkeypatch):
 
 
 def test_mock_gpu_count_override(monkeypatch):
-    monkeypatch.setenv("GPU_SCHEDULER_MOCK_GPUS", "2")
+    monkeypatch.setenv("ZGM_MOCK_GPUS", "2")
     assert len(make_provider().discover()) == 2
     assert len(make_provider(6).discover()) == 6
 

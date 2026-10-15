@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from gpu_scheduler.app import GPUSchedulerApp
-from gpu_scheduler.models import Task, TaskStatus
-from gpu_scheduler.screens.config import ConfigScreen
-from gpu_scheduler.screens.schedule import ScheduleScreen
-from gpu_scheduler.widgets.gpu_row import LABEL_WIDTH, GPURow
-from gpu_scheduler.widgets.gpu_timeline import GPUTimeline
-from gpu_scheduler.widgets.task_card import TaskCard
+from zgm.app import ZGMApp
+from zgm.models import Task, TaskStatus
+from zgm.screens.config import ConfigScreen
+from zgm.screens.schedule import ScheduleScreen
+from zgm.widgets.gpu_row import LABEL_WIDTH, GPURow
+from zgm.widgets.gpu_timeline import GPUTimeline
+from zgm.widgets.task_card import TaskCard
 
 EXAMPLES = Path(__file__).parent.parent / "examples" / "configs"
 SIZE = (140, 42)
@@ -25,8 +25,8 @@ def config_dir(tmp_path: Path) -> Path:
     return d
 
 
-def make_app(config_dir: Path, tasks: list[Task] | None = None) -> GPUSchedulerApp:
-    app = GPUSchedulerApp(mock_gpus=4, config_dir=config_dir, stats_interval=0)
+def make_app(config_dir: Path, tasks: list[Task] | None = None) -> ZGMApp:
+    app = ZGMApp(mock_gpus=4, config_dir=config_dir, stats_interval=0)
     for t in tasks or []:
         app.store.add_task(t)
     return app
@@ -189,7 +189,7 @@ async def test_multi_gpu_card_aligns_across_rows(config_dir):
 async def test_history_left_of_now_uses_actual_times(config_dir):
     from datetime import datetime
 
-    from gpu_scheduler.models import Assignment, AssignmentState
+    from zgm.models import Assignment, AssignmentState
 
     t = task("finished")
     t.status = TaskStatus.COMPLETED
@@ -300,7 +300,7 @@ async def test_unassign_from_timeline(config_dir):
 
 
 async def test_card_width_option(config_dir):
-    app = GPUSchedulerApp(mock_gpus=2, config_dir=config_dir, stats_interval=0, card_width=30)
+    app = ZGMApp(mock_gpus=2, config_dir=config_dir, stats_interval=0, card_width=30)
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         assert app.screen.timeline.state.card_width == 30
@@ -314,7 +314,7 @@ async def test_ui_is_english_only(config_dir):
         await pilot.pause()
         assert not re.search(r"[\u4e00-\u9fff]", str(app.screen.query_one("#view-tabs").render()))
     src = Path(__file__).parent.parent / "src"
-    offenders = [p for p in src.rglob("*.py") if re.search(r"[\u4e00-\u9fff]", p.read_text())]
+    offenders = [p for p in src.rglob("*.py") if re.search(r"[\u4e00-\u9fff]", p.read_text(encoding="utf-8"))]
     assert offenders == []
 
 
@@ -378,11 +378,11 @@ async def test_config_edit_derive_and_task(config_dir):
         assert repo.get("rn50_lr05").dirty
         await pilot.press("ctrl+s")
         await pilot.pause()
-        text = child_file.read_text()
+        text = child_file.read_text(encoding="utf-8")
         assert "_base_: resnet50_base.yaml" in text
         assert "batch_size: 512" in text and "lr: 0.05" in text
         assert "momentum" not in text  # only the diff is stored
-        assert "batch_size: 256" in (config_dir / "resnet50_base.yaml").read_text()
+        assert "batch_size: 256" in (config_dir / "resnet50_base.yaml").read_text(encoding="utf-8")
 
         # create a task from it and see it in the schedule view
         await pilot.press("T")
@@ -405,7 +405,7 @@ async def test_runtime_disabled_by_default(config_dir):
 
 
 async def test_mock_runtime_records_actual_times(config_dir):
-    from gpu_scheduler.runtime.mock import MockRuntime
+    from zgm.runtime.mock import MockRuntime
 
     a = task("alpha")
     app = make_app(config_dir, [a])
@@ -474,7 +474,7 @@ async def test_edit_gpu_count_of_planned_task(config_dir):
 
 
 async def _start_running(app, pilot, t):
-    from gpu_scheduler.runtime.mock import MockRuntime
+    from zgm.runtime.mock import MockRuntime
 
     app.runtime = MockRuntime(speedup=1)  # stays running
     app.assignment_service.assign(t.id, [0])
@@ -486,8 +486,8 @@ async def _start_running(app, pilot, t):
 
 @pytest.mark.parametrize("choice,kept", [("requeue", True), ("delete", False)])
 async def test_stop_running_task(config_dir, choice, kept):
-    from gpu_scheduler.models import AssignmentState
-    from gpu_scheduler.widgets.dialogs import ChoiceScreen
+    from zgm.models import AssignmentState
+    from zgm.widgets.dialogs import ChoiceScreen
 
     a = task("alpha")
     app = make_app(config_dir, [a])
@@ -538,7 +538,7 @@ async def test_rename_config_repoints_tasks(config_dir):
         await pilot.press(*["backspace"] * 30, *"rn50_adamw", "enter")
         await pilot.pause()
         assert (config_dir / "rn50_adamw.yaml").exists()
-        assert "_base_: rn50_adamw.yaml" in (config_dir / "resnet50_adamw_bs512.yaml").read_text()
+        assert "_base_: rn50_adamw.yaml" in (config_dir / "resnet50_adamw_bs512.yaml").read_text(encoding="utf-8")
         (t,) = app.store.tasks.values()
         assert t.config_path.endswith("rn50_adamw.yaml") and "rn50_adamw.yaml" in t.command
         assert screen.current.name == "rn50_adamw.yaml"

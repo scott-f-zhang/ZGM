@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,13 @@ from ..models import ConfigNode, Task, config_fingerprint
 from . import config_loader as cl
 
 DEFAULT_COMMAND_TEMPLATE = "python train.py --config {path}"
+
+
+def quote_path(path: str) -> str:
+    """Quote ``path`` for the local shell (cmd.exe rules on Windows, POSIX elsewhere)."""
+    if os.name == "nt":
+        return subprocess.list2cmdline([path])
+    return shlex.quote(path)
 
 
 class ConfigRepository:
@@ -238,7 +246,7 @@ class ConfigRepository:
             raise ValueError(node.error)
         meta = node.resolved.get(cl.SCHEDULER_KEY) or {}
         gpus = int(meta.get("gpus", 1))
-        command = template.format(path=shlex.quote(str(node.path)), name=node.name)
+        command = template.format(path=quote_path(str(node.path)), name=node.name)
         return Task(
             name=str(meta.get("name", node.name)),
             command=command,
