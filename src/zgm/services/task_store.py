@@ -105,18 +105,29 @@ class TaskStore:
                       key=lambda t: t.created_at)
 
     # assignments -----------------------------------------------------------
-    def save_assignment(self, a: Assignment, event: str | None) -> None:
-        """Persist ``a``; ``event`` (if given) is appended to the history log."""
+    def save_assignment(self, a: Assignment, event: str | None) -> bool:
+        """Persist ``a``; ``event`` (if given) is appended to the history log.
+        False if another process had already moved it on (see SqliteStorage):
+        nothing is written, and the next ``sync`` brings the current state."""
         self.assignments[a.id] = a
-        self.storage.save_assignment(a)
+        if not self.storage.save_assignment(a):
+            self._data_version = None  # stale: reload on the next sync
+            return False
         if event is None:
-            return
+            return True
         self.storage.log_event(
             event,
             a.task_id,
             a.id,
             {"gpus": list(a.gpu_ids), "start": a.planned_start, "end": a.planned_end},
         )
+        return True
+
+    def update_planned(self, a: Assignment) -> None:
+        """Persist a queued assignment's GPUs, order and times, if it is still queued."""
+        self.assignments[a.id] = a
+        if not self.storage.update_planned(a):
+            self._data_version = None  # it started or went away elsewhere: reload
 
     def delete_assignment(self, assignment_id: str) -> Assignment | None:
         a = self.assignments.pop(assignment_id, None)

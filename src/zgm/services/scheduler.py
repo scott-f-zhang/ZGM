@@ -178,7 +178,7 @@ class AssignmentService:
             if (a.planned_start, a.planned_end) != (slot.start, slot.end):
                 a.planned_start, a.planned_end = slot.start, slot.end
                 if persist:
-                    self.store.save_assignment(a, None)
+                    self.store.update_planned(a)
 
     def preview(
         self,
@@ -260,7 +260,10 @@ class AssignmentService:
             a.seq = i
         self.recompute(persist=False)
         for a in order:
-            self.store.save_assignment(a, event_for.get(a.id))
+            if a.id in event_for:  # the one being added or moved
+                self.store.save_assignment(a, event_for[a.id])
+            else:  # the rest only shift; never write back a stale copy of them
+                self.store.update_planned(a)
 
     def assign(
         self, task_id: str, gpu_ids: Sequence[int], position: int | None = None

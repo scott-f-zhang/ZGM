@@ -172,6 +172,9 @@ def build_process(task: Task, gpu_ids: Sequence[int] | None,
     # number GPUs like nvidia-smi/NVML (PCI bus order), not CUDA's default
     # fastest-first, so "GPU 2" is the same card for zgm, nvidia-smi and the task
     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    # output goes to a log file, where Python would otherwise use the locale's
+    # encoding (GBK on Chinese Windows) and fail on the first non-ASCII character
+    env["PYTHONIOENCODING"] = "utf-8"
     env.update({k: fill(v, values) for k, v in spec.env.items()})
     env.update({
         "PYTHONUNBUFFERED": "1",
