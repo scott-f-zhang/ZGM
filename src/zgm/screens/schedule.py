@@ -13,6 +13,8 @@ from textual.widgets import Footer, Static
 
 from ..models import AssignmentState, Task, TaskStatus
 from ..services.lease import describe
+from ..widgets import theme
+from ..widgets.theme import badge, box_footer, box_title, hints
 from ..services.scheduler import Result, Slot
 from ..widgets.dialogs import ChoiceScreen, apply_task_edit, edit_task_form, new_task_form
 from ..widgets.gpu_row import GPURow
@@ -44,19 +46,19 @@ class PlacementPreview:
 
 class ScheduleScreen(Screen):
     BINDINGS = [
-        Binding("a", "place", "Assign"),
-        Binding("enter", "confirm", "Confirm/Pick", show=False),
-        Binding("escape", "cancel", "Cancel", show=False),
-        Binding("u,delete", "unassign", "Unassign"),
-        Binding("left_square_bracket,shift+left", "shift(-1)", "Earlier", show=False),
-        Binding("right_square_bracket,shift+right", "shift(1)", "Later", show=False),
-        Binding("n", "new_task", "New task"),
-        Binding("e", "edit_task", "Edit/rename"),
-        Binding("d", "delete_task", "Delete task"),
-        Binding("r", "run", "Run now", show=False),
-        Binding("p", "toggle_autostart", "Auto-start"),
-        Binding("s", "stop", "Stop"),
-        Binding("tab", "toggle_focus", "Queue⇄Timeline"),
+        Binding("a", "place", "assign"),
+        Binding("enter", "confirm", "confirm/pick", show=False),
+        Binding("escape", "cancel", "cancel", show=False),
+        Binding("u,delete", "unassign", "unassign"),
+        Binding("left_square_bracket,shift+left", "shift(-1)", "earlier", show=False),
+        Binding("right_square_bracket,shift+right", "shift(1)", "later", show=False),
+        Binding("n", "new_task", "new task"),
+        Binding("e", "edit_task", "edit/rename"),
+        Binding("d", "delete_task", "delete task"),
+        Binding("r", "run", "run now", show=False),
+        Binding("p", "toggle_autostart", "auto-start"),
+        Binding("s", "stop", "stop"),
+        Binding("tab", "toggle_focus", "queue⇄timeline"),
     ]
 
     def __init__(self, **kw) -> None:
@@ -76,16 +78,16 @@ class ScheduleScreen(Screen):
     def compose(self) -> ComposeResult:
         yield ViewTabs("schedule", id="view-tabs")
         queue = TaskQueue(id="task-queue")
-        queue.border_title = "Task Queue"
+        queue.border_title = box_title("queue", info="waiting tasks")
+        queue.border_subtitle = box_footer("a assign · n new · d delete")
         yield queue
         details = TaskDetails(id="task-details")
-        details.border_title = "Task Details"
+        details.border_title = box_title("details")
         yield details
         timeline = GPUTimeline(self.app.gpus, card_width=self.app.card_width, id="gpu-timeline")
-        timeline.border_title = (
-            f"GPU Timeline · {len(self.app.gpus)} GPU(s) · {self.app.gpu_source}"
-            "  ·  history to scale ┃ now ┃ queue"
-        )
+        timeline.border_title = box_title(
+            "timeline", info=f"{len(self.app.gpus)} gpu · {self.app.gpu_source}")
+        timeline.border_subtitle = box_footer("history to scale ┃ now ┃ queue in order")
         yield timeline
         yield Static("", id="status-line")
         yield Footer()
@@ -174,31 +176,32 @@ class ScheduleScreen(Screen):
         if self.placement and p:
             task = self.store.tasks.get(self.placement.task_id)
             ok = p.result.ok
-            msg.append(" PLACING ", style="bold #0b0f19 on #22c55e" if ok else "bold white on #ef4444")
+            msg.append(" PLACING ", style=badge(theme.OK if ok else theme.BAD))
             gpus = ",".join(map(str, p.gpu_ids))
-            msg.append(f" {task.name if task else '?'} → GPU {gpus}, queue #{p.position + 1}")
-            msg.append("   ←/→ position  ↑/↓ GPU  Enter confirm  Esc cancel", style="dim")
+            msg.append(f" {task.name if task else '?'} → GPU {gpus}, queue #{p.position + 1}  ",
+                       style=theme.MAIN_FG)
+            msg.append_text(hints([("←/→", "position"), ("↑/↓", "gpu"), ("Enter", "confirm"),
+                                   ("Esc", "cancel")]))
             if not ok:
-                msg.append(f"   ✗ {p.result.message}", style="red")
+                msg.append(f"   ✗ {p.result.message}", style=theme.BAD)
         else:
             info = self.app.executor_info()
             if info is not None:
                 if self.app.autostart:
-                    msg.append(" AUTO ▶ ", style="bold #0b0f19 on #22c55e")
+                    msg.append(" AUTO ▶ ", style=badge(theme.OK))
                 else:
-                    msg.append(" PAUSED ‖ ", style="bold #0b0f19 on #f59e0b")
+                    msg.append(" PAUSED ‖ ", style=badge(theme.WARN))
                 who = (f"{info.get('runtime')} runtime" if self.app.is_executor
                        else f"run by {describe(info)}")
-                msg.append(f" {who} · p toggles · r runs now ", style="dim")
+                msg.append(f" {who}  ", style=theme.SUBTLE)
+                msg.append_text(hints([("p", "pause"), ("r", "run now")]))
             else:
-                msg.append(" PLAN ONLY ", style="bold #0b0f19 on #94a3b8")
-                msg.append(" nothing runs: zgm daemon start ", style="dim")
-            msg.append(
-                " Tab queue⇄timeline · a assign · Enter pick up · [ ] reorder · u unassign · "
-                "e edit/rename · s stop · "
-                "h/l +/- history · drag cards/blocks with the mouse",
-                style="dim",
-            )
+                msg.append(" PLAN ONLY ", style=badge(theme.INACTIVE_FG, theme.MAIN_FG))
+                msg.append(" nothing runs: zgm daemon start", style=theme.SUBTLE)
+            msg.append("   ")
+            msg.append_text(hints([("Tab", "queue⇄timeline"), ("Enter", "pick up"),
+                                   ("[ ]", "reorder"), ("u", "unassign"), ("e", "edit"),
+                                   ("s", "stop"), ("h/l +/-", "history")]))
         self.query_one("#status-line", Static).update(msg)
 
     # placement -------------------------------------------------------------

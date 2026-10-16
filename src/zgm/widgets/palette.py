@@ -1,24 +1,27 @@
-"""Stable per-task colours shared by cards and timeline blocks."""
+"""Stable per-task colours shared by cards and timeline blocks: the bright
+stops of btop's default gradients, so dark text stays readable on them."""
 
 from __future__ import annotations
 
 import zlib
 
+from . import theme
+
 TASK_COLORS = [
-    "#3b82f6",
-    "#10b981",
-    "#f59e0b",
-    "#8b5cf6",
-    "#ec4899",
-    "#14b8a6",
-    "#f97316",
-    "#6366f1",
-    "#84cc16",
-    "#06b6d4",
+    "#77ca9b",  # cpu start
+    "#cbc06c",  # cpu mid
+    "#4897d4",  # temp start
+    "#d9626d",  # used mid
+    "#74e6fc",  # cached mid
+    "#b5e685",  # free mid
+    "#ffd77a",  # available mid
+    "#dcafde",  # upload end
+    "#ff40b6",  # temp end
+    "#b0a9de",  # download end
 ]
-HISTORY_COLOR = "#4b5563"
-GHOST_OK = "#22c55e"
-GHOST_BAD = "#ef4444"
+HISTORY_COLOR = "#2e2e2e"
+GHOST_OK = theme.OK
+GHOST_BAD = theme.BAD
 
 
 def task_color(task_id: str) -> str:

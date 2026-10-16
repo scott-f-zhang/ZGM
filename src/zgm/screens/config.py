@@ -19,28 +19,30 @@ from ..models import ConfigNode, Origin, format_duration
 from ..services import config_loader as cl
 from ..services.config_repo import MISSING
 from ..widgets.dialogs import FormScreen
+from ..widgets import theme
+from ..widgets.theme import box_title
 from ..widgets.view_tabs import ViewTabs
 
 ORIGIN_STYLE = {
-    Origin.INHERITED: ("○", "#9ca3af"),
-    Origin.OVERRIDDEN: ("●", "#f59e0b"),
-    Origin.NEW: ("✚", "#22c55e"),
+    Origin.INHERITED: ("○", theme.SUBTLE),
+    Origin.OVERRIDDEN: ("●", theme.WARN),
+    Origin.NEW: ("✚", theme.OK),
 }
 
 
 class ConfigScreen(Screen):
     BINDINGS = [
-        Binding("e", "edit", "Edit"),
-        Binding("x", "revert", "Revert to inherited"),
-        Binding("n", "add_key", "Add key"),
-        Binding("D", "derive", "Derive"),
-        Binding("r", "rename", "Rename"),
-        Binding("ctrl+s", "save", "Save"),
-        Binding("R", "reload", "Reload"),
-        Binding("T", "to_task", "→ Task"),
-        Binding("v", "toggle_preview", "Diff/YAML"),
-        Binding("slash", "filter", "Filter"),
-        Binding("escape", "clear_filter", "Clear filter", show=False),
+        Binding("e", "edit", "edit"),
+        Binding("x", "revert", "revert to inherited"),
+        Binding("n", "add_key", "add key"),
+        Binding("D", "derive", "derive"),
+        Binding("r", "rename", "rename"),
+        Binding("ctrl+s", "save", "save"),
+        Binding("R", "reload", "reload"),
+        Binding("T", "to_task", "→ task"),
+        Binding("v", "toggle_preview", "diff/yaml"),
+        Binding("slash", "filter", "filter"),
+        Binding("escape", "clear_filter", "clear filter", show=False),
     ]
 
     def __init__(self, **kw) -> None:
@@ -57,7 +59,7 @@ class ConfigScreen(Screen):
         yield ViewTabs("configs", id="view-tabs")
         with Horizontal(id="config-main"):
             tree: Tree = Tree("configs", id="config-tree")
-            tree.border_title = "Configs"
+            tree.border_title = box_title("configs")
             tree.show_root = False
             yield tree
             with Vertical(id="config-right"):
@@ -65,10 +67,10 @@ class ConfigScreen(Screen):
                 filt.display = False
                 yield filt
                 table: DataTable = DataTable(id="config-table", cursor_type="row", zebra_stripes=True)
-                table.border_title = "Parameters"
+                table.border_title = box_title("parameters")
                 yield table
                 preview = Static(id="config-preview")
-                preview.border_title = "Diff vs parent"
+                preview.border_title = box_title("diff vs parent")
                 yield preview
         yield Footer()
 
@@ -99,7 +101,7 @@ class ConfigScreen(Screen):
     def rebuild_tree(self) -> None:
         tree = self.query_one(Tree)
         tree.clear()
-        tree.border_title = f"Configs · {self.repo.root.name}/"
+        tree.border_title = box_title("configs", info=f"{self.repo.root.name}/")
         target = None
 
         def add(parent, node: ConfigNode, depth: int = 0) -> None:
@@ -143,12 +145,12 @@ class ConfigScreen(Screen):
     def tree_label(self, node: ConfigNode) -> Text:
         t = Text()
         if node.error:
-            t.append("⚠ ", style="bold red")
-        t.append(node.name, style="red" if node.error else "")
+            t.append("⚠ ", style=f"bold {theme.BAD}")
+        t.append(node.name, style=theme.BAD if node.error else theme.MAIN_FG)
         if len(node.bases) > 1:
-            t.append(f" ⧉{len(node.bases)}", style="cyan")
+            t.append(f" ⧉{len(node.bases)}", style=theme.CACHED[1])
         if node.dirty:
-            t.append(" *", style="bold #f59e0b")
+            t.append(" *", style=f"bold {theme.WARN}")
         return t
 
     def refresh_tree_labels(self) -> None:
@@ -168,12 +170,12 @@ class ConfigScreen(Screen):
         keep_key = keep_key or self.selected_key()
         table.clear()
         if node is None:
-            table.border_title = "Parameters"
+            table.border_title = box_title("parameters")
             self.refresh_preview()
             return
         dirty = " *" if node.dirty else ""
-        table.border_title = (f"Parameters · {self.repo.rel(node.path)}{dirty}"
-                              f" · {self.estimate_text(node)}")
+        table.border_title = box_title(
+            "parameters", info=f"{self.repo.rel(node.path)}{dirty} · {self.estimate_text(node)}")
         if node.error:
             table.add_row(Text("error", style="red"), Text(node.error, style="red"), "", key="__error__")
         for key, value, prov in self.repo.params(node):
@@ -203,12 +205,12 @@ class ConfigScreen(Screen):
             preview.update("")
             return
         if self.preview_mode == "yaml":
-            preview.border_title = f"YAML · {node.path.name}"
+            preview.border_title = box_title("yaml", info=node.path.name)
             preview.update(Syntax(cl.dump_yaml(node.own) if node.own is not None else "",
                                   "yaml", theme="monokai", background_color="default"))
             return
         bases = ", ".join(b.name for b in node.bases) or "none"
-        preview.border_title = f"Diff vs parent ({bases})"
+        preview.border_title = box_title("diff vs parent", info=bases)
         rows = self.repo.diff(node)
         if not rows:
             msg = "root config — nothing inherited" if not node.bases else "identical to parent"
@@ -216,9 +218,9 @@ class ConfigScreen(Screen):
             return
         grid = Table.grid(padding=(0, 2))
         grid.add_column(style="bold")
-        grid.add_column(style="red")
-        grid.add_column()
-        grid.add_column(style="green")
+        grid.add_column(style=theme.USED[1])
+        grid.add_column(style=theme.SUBTLE)
+        grid.add_column(style=theme.OK)
         for key, old, new in rows:
             grid.add_row(
                 key,

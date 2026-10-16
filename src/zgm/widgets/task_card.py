@@ -9,15 +9,16 @@ from textual.reactive import reactive
 from textual.widget import Widget
 
 from ..models import Task, TaskStatus, format_estimate
+from . import theme
 from .palette import task_color
 
 STATUS_STYLE = {
-    TaskStatus.PENDING: ("PENDING", "bold yellow"),
-    TaskStatus.PLANNED: ("PLANNED", "bold cyan"),
-    TaskStatus.RUNNING: ("RUNNING", "bold green"),
-    TaskStatus.COMPLETED: ("DONE", "dim green"),
-    TaskStatus.FAILED: ("FAILED", "bold red"),
-    TaskStatus.CANCELLED: ("CANCELLED", "dim"),
+    TaskStatus.PENDING: ("pending", f"bold {theme.WARN}"),
+    TaskStatus.PLANNED: ("planned", f"bold {theme.CACHED[1]}"),
+    TaskStatus.RUNNING: ("running", f"bold {theme.OK}"),
+    TaskStatus.COMPLETED: ("done", theme.OK),
+    TaskStatus.FAILED: ("failed", f"bold {theme.BAD}"),
+    TaskStatus.CANCELLED: ("cancelled", theme.SUBTLE),
 }
 
 DRAG_THRESHOLD = 2  # cells of movement before a press becomes a drag
@@ -66,14 +67,14 @@ class TaskCard(Widget):
         out = Text(no_wrap=True, overflow="ellipsis")
         out.append("█ ", style=color)
         name = t.name if len(t.name) <= width - 2 else t.name[: width - 3] + "…"
-        out.append(name + "\n", style="bold")
-        out.append(f"GPU×{t.required_gpus}", style="magenta")
+        out.append(name + "\n", style=f"bold {theme.TITLE}")
+        out.append(f"gpu×{t.required_gpus}", style=theme.DOWNLOAD[2])
         out.append("  ")
         known = t.estimated_duration is not None
-        out.append(f"⏱ {format_estimate(t)}\n", style="" if known else "dim italic")
+        out.append(f"⏱ {format_estimate(t)}\n", style=theme.MAIN_FG if known else theme.SUBTLE)
         out.append(label, style=style)
         if t.config_path:
-            out.append("  ⚙", style="dim")
+            out.append("  ⚙", style=theme.SUBTLE)
         return out
 
     # mouse: press selects, press+move drags onto the timeline ---------------
