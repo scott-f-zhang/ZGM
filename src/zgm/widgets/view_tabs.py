@@ -7,35 +7,42 @@ from rich.text import Text
 from textual import events
 from textual.widgets import Static
 
-VIEWS = [("schedule", "1", "Schedule"), ("configs", "2", "Configs")]
+from . import theme
+
+VIEWS = [("schedule", 1, "schedule"), ("configs", 2, "configs")]
+BRAND = " zgm "
+GAP = "   "
 
 
 class ViewTabs(Static):
+    """The top line, like btop's: the name, then each view with its key as a
+    red superscript; the open view is bright, the others dim."""
+
     def __init__(self, active: str, **kw) -> None:
         super().__init__(**kw)
         self.active = active
 
     def render(self) -> Text:
         out = Text(no_wrap=True)
-        out.append(" ZGM ", style="bold #0b0f19 on #60a5fa")
-        out.append("  ")
+        out.append(BRAND, style=f"bold {theme.TITLE}")
+        out.append("│", style=theme.DIV_LINE)
         for mode, key, label in VIEWS:
+            out.append(GAP)
+            out.append(theme.sup(key), style=theme.HI_FG)
             if mode == self.active:
-                out.append(f" {key} ", style="bold #0b0f19 on #f59e0b")
-                out.append(f" {label} ", style="bold #f59e0b on #1f2937")
+                out.append(label, style=f"bold {theme.TITLE} underline")
             else:
-                out.append(f" {key} ", style="#9ca3af on #1f2937")
-                out.append(f" {label} ", style="#9ca3af")
-            out.append("  ")
+                out.append(label, style=theme.SUBTLE)
         return out
 
     def on_click(self, event: events.Click) -> None:
         # click a tab to switch views
         x = event.x
-        pos = len(" ZGM ") + 2
+        pos = cell_len(BRAND) + 1
         for mode, key, label in VIEWS:
-            w = cell_len(f" {key} ") + cell_len(f" {label} ")
+            pos += len(GAP)
+            w = cell_len(theme.sup(key) + label)
             if pos <= x < pos + w:
                 self.app.switch_mode(mode)
                 return
-            pos += w + 2
+            pos += w

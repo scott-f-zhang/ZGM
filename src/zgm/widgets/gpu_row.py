@@ -19,16 +19,18 @@ from textual.widget import Widget
 
 from ..models import GPUDevice
 from ..models.gpu import format_bytes_gib
+from . import theme
 from .timeline_state import Hit, TimelineState, wrap_center
 
 LABEL_WIDTH = 24
 LABEL_LINES = 3
 DRAG_THRESHOLD = 1
+METER_WIDTH = 8
 
-PAST_BG = "#111827"
-FUTURE_BG = "#0b0f19"
-NOW_COLOR = "#f43f5e"
-GRID = "#374151"
+PAST_BG = theme.PAST_BG
+FUTURE_BG = theme.MAIN_BG
+NOW_COLOR = theme.NOW
+GRID = theme.DIV_LINE
 
 
 @dataclass
@@ -41,7 +43,7 @@ class Card:
     gpu_ids: tuple[int, ...]
     lines: list[str]  # already centred to the card width
     bg: str
-    fg: str = "#0b0f19"
+    fg: str = theme.MAIN_BG
     kind: str = "planned"  # running | planned | ghost
     selected: bool = False
     dimmed: bool = False  # original of a block that is being moved
@@ -57,13 +59,8 @@ class PastBlock:
     x1: int
     label: str
     bg: str
-    fg: str = "#e5e7eb"
+    fg: str = theme.MAIN_FG
     gpu_ids: tuple[int, ...] = field(default_factory=tuple)
-
-
-def _bar(frac: float, width: int) -> str:
-    full = int(round(frac * width))
-    return "▮" * full + "▯" * (width - full)
 
 
 def card_rows_needed(card: Card) -> int:
@@ -142,28 +139,37 @@ class GPURow(Widget):
     def _label_line(self, y: int) -> list[Segment]:
         g = self.gpu
         cursor_row = self.state.cursor_gpu == g.id
-        base = Style(bgcolor="#1f2937" if cursor_row else None)
+        base = Style(bgcolor=theme.SELECTED_BG if cursor_row else None)
+        dim = base + Style(color=theme.SUBTLE)
+        text = base + Style(color=theme.MAIN_FG)
         lines = [
-            [(f"{'▶' if cursor_row else ' '}GPU{g.id} ", base + Style(bold=True)),
-             (g.short_name, base + Style(color="#9ca3af"))],
-            [(" mem ", base + Style(dim=True)),
-             (_bar(g.memory_fraction, 8), base + Style(color="#a78bfa")),
-             (f" {format_bytes_gib(g.memory_used)}/{format_bytes_gib(g.memory_total)}", base)],
-            [(" util", base + Style(dim=True)),
-             (" " + _bar(g.utilization / 100, 8), base + Style(color="#34d399")),
-             (f" {g.utilization}%", base)],
+            [(f"{'▶' if cursor_row else ' '}", base + Style(color=theme.TITLE, bold=True)),
+             (f"gpu{g.id} ", base + Style(color=theme.TITLE, bold=True)),
+             (g.short_name, dim)],
+            [(" mem ", dim),
+             theme.meter(g.memory_fraction, METER_WIDTH, theme.TEMP, base),
+             (f" {format_bytes_gib(g.memory_used)}/{format_bytes_gib(g.memory_total)}", text)],
+            [(" util", dim), (" ", base),
+             theme.meter(g.utilization / 100, METER_WIDTH, theme.CPU, base),
+             (f" {g.utilization}%", text)],
         ]
         if g.external:
             known = [p.used_memory for p in g.external if p.used_memory is not None]
             mem = f" {sum(known) / 1024**3:.1f}G" if known else ""
             n = len(g.external)
             lines.append([(f" ! other: {n} proc{'s' if n > 1 else ''}{mem}",
-                           base + Style(color="#f87171", bold=True))])
+                           base + Style(color=theme.BAD, bold=True))])
         elif not g.processes_visible:
-            lines.append([(" ? procs unknown", base + Style(color="#fbbf24"))])
+            lines.append([(" ? procs unknown", base + Style(color=theme.WARN))])
         parts = lines[y] if y < len(lines) else []
         segs, used = [], 0
-        for text, style in parts:
+        for part in parts:
+            if isinstance(part, list):  # a meter: already segments, one cell each
+                part = part[: max(0, LABEL_WIDTH - 1 - used)]
+                segs.extend(part)
+                used += sum(len(s.text) for s in part)
+                continue
+            text, style = part
             text = text[: max(0, LABEL_WIDTH - 1 - used)]
             segs.append(Segment(text, style))
             used += len(text)
@@ -219,7 +225,7 @@ class GPURow(Widget):
             for i in range(w):
                 cells[x + i] = (" ", style)
             if card.selected:
-                edge = Style(bgcolor=card.bg, color="#ffffff", bold=True)
+                edge = Style(bgcolor=card.bg, color=theme.TITLE, bold=True)
                 cells[x] = ("▌", edge)
                 cells[x + w - 1] = ("▐", edge)
             if gutter or not self.shows_content(card):
@@ -235,7 +241,7 @@ class GPURow(Widget):
         if self.end_slot_col is not None and not gutter:
             x = st.col_x(self.end_slot_col)
             if x is not None and x + w <= width:
-                style = Style(bgcolor="#1f2937", color="#9ca3af")
+                style = Style(bgcolor="#141414", color=theme.SUBTLE)
                 for i in range(w):
                     cells[x + i] = (" ", style)
                 if y == body // 2:
@@ -253,7 +259,8 @@ class GPURow(Widget):
                 run_text, run_style = ch, style
         if run_text:
             segs.append(Segment(run_text, run_style))
-        return Strip(segs)
+        # cells without a background of their own take the widget's (not the terminal's)
+        return Strip(segs).apply_style(self.rich_style)
 
     # mouse -----------------------------------------------------------------
     def on_mouse_move(self, event: events.MouseMove) -> None:

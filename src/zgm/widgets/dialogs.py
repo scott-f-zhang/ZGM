@@ -13,24 +13,24 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
 from ..models import LaunchSpec, Task, launch_fingerprint
+from .theme import box_title
 
 
 class FormScreen(ModalScreen[Any]):
     """Generic labelled-input form; ``validate`` turns values into a result or raises."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel"), Binding("ctrl+s", "submit", "OK")]
+    BINDINGS = [Binding("escape", "cancel", "cancel"), Binding("ctrl+s", "submit", "ok")]
     DEFAULT_CSS = """
     FormScreen { align: center middle; }
     FormScreen > Vertical {
         width: 84; max-width: 100%; height: auto; max-height: 100%; overflow-y: auto;
         padding: 1 2;
-        border: round $accent; background: $panel;
+        border: round #556d59; border-title-color: #556d59; background: #000000;
     }
-    FormScreen .form-title { text-style: bold; margin-bottom: 1; }
     FormScreen Grid { grid-size: 2; grid-columns: 16 1fr; grid-rows: 3; height: auto; }
     FormScreen Grid Label { padding: 1 0 0 0; }
     FormScreen .form-error { color: $error; height: auto; }
-    FormScreen .form-hint { color: $text-muted; height: auto; }
+    FormScreen .form-hint { color: #606060; height: auto; }
     FormScreen Horizontal { height: auto; align-horizontal: right; margin-top: 1; }
     FormScreen Button { margin-left: 1; }
     """
@@ -49,8 +49,8 @@ class FormScreen(ModalScreen[Any]):
         self.hint = hint
 
     def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(self.title_text, classes="form-title")
+        with Vertical() as box:
+            box.border_title = box_title(self.title_text.lower())
             with Grid():
                 for key, label, initial in self.fields:
                     yield Label(label)
@@ -169,15 +169,14 @@ def apply_task_edit(task: Task, name: str, spec: LaunchSpec, gpus: int) -> None:
 class ChoiceScreen(ModalScreen[str | None]):
     """A question with a few buttons; dismisses with the chosen key (None = Esc)."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
     DEFAULT_CSS = """
     ChoiceScreen { align: center middle; }
     ChoiceScreen > Vertical {
         width: 64; height: auto; padding: 1 2;
-        border: round $warning; background: $panel;
+        border: round #805252; border-title-color: #805252; background: #000000;
     }
-    ChoiceScreen .choice-title { text-style: bold; margin-bottom: 1; }
-    ChoiceScreen .choice-body { color: $text-muted; height: auto; margin-bottom: 1; }
+    ChoiceScreen .choice-body { color: #606060; height: auto; margin-bottom: 1; }
     ChoiceScreen Vertical Button { width: 100%; margin-top: 1; }
     """
 
@@ -187,8 +186,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.title_text, self.body, self.choices = title, body, choices
 
     def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(self.title_text, classes="choice-title")
+        with Vertical() as box:
+            box.border_title = box_title(self.title_text)
             if self.body:
                 yield Static(self.body, classes="choice-body")
             for key, label, variant in self.choices:

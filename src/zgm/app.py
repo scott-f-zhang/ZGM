@@ -19,7 +19,10 @@ from .services.lease import ExecutorLease
 from .services.scheduler import AssignmentService
 from .services.task_store import TaskStore, seed_demo
 from .storage.sqlite import SqliteStorage
+from .widgets.theme import install_box_titles, textual_theme
 from .widgets.timeline_state import DEFAULT_CARD_WIDTH, MIN_CARD_WIDTH
+
+install_box_titles()
 
 
 class ZGMApp(App):
@@ -28,9 +31,9 @@ class ZGMApp(App):
     MODES = {"schedule": ScheduleScreen, "configs": ConfigScreen}
     DEFAULT_MODE = "schedule"
     BINDINGS = [
-        Binding("1,f1", "switch_mode('schedule')", "Schedule", show=False),
-        Binding("2,f2", "switch_mode('configs')", "Configs", show=False),
-        Binding("q", "quit", "Quit"),
+        Binding("1,f1", "switch_mode('schedule')", "schedule", show=False),
+        Binding("2,f2", "switch_mode('configs')", "configs", show=False),
+        Binding("q", "quit", "quit"),
     ]
 
     def __init__(
@@ -71,7 +74,8 @@ class ZGMApp(App):
         self.notify(message, severity=severity, timeout=15 if severity == "error" else 5)
 
     def on_mount(self) -> None:
-        self.theme = "textual-dark"
+        self.register_theme(textual_theme())
+        self.theme = "btop"
         self._holder = self.lease.holder()
         for message in self._gpu_changes:
             self.notify(message, severity="warning", timeout=10)

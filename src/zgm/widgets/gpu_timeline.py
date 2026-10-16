@@ -16,11 +16,12 @@ from textual.widget import Widget
 from ..models import Assignment, AssignmentState, GPUDevice, Task
 from ..services.scheduler import Slot
 from .gpu_row import LABEL_WIDTH, NOW_COLOR, Card, GPURow, PastBlock
+from . import theme
 from .palette import GHOST_BAD, GHOST_OK, HISTORY_COLOR, task_color
 from .timeline_state import DEFAULT_CARD_WIDTH, Hit, TimelineState, wrap_center
 
-FAILED_COLOR = "#7f1d1d"
-STOPPED_COLOR = "#78350f"
+FAILED_COLOR = theme.USED[0]  # dark red
+STOPPED_COLOR = theme.AVAILABLE[0]  # dark amber
 
 
 def card_lines(task: Task | None, slot: Slot, width: int, now: datetime,
@@ -54,7 +55,7 @@ class TimeAxis(Widget):
     def render_line(self, y: int) -> Strip:
         st = self.state
         width = max(0, self.size.width - LABEL_WIDTH)
-        dim = Style(color="#6b7280")
+        dim = Style(color=theme.SUBTLE)
         if y == 0:
             head = f" history {st.minutes_per_cell}m/cell"
         else:
@@ -85,25 +86,26 @@ class TimeAxis(Widget):
             text = f"#{col + 1}".center(w) if y == 0 else "─" * w
             for i, ch in enumerate(text):
                 line[x + i] = ch
-        segs.append(Segment("".join(line[:st.divider_x]), Style(color="#9ca3af")))
+        segs.append(Segment("".join(line[:st.divider_x]), Style(color=theme.SUBTLE)))
         if st.divider_x < width:
             now_label = "▼" if y == 1 else "┃"
             segs.append(Segment(now_label, Style(color=NOW_COLOR, bold=True)))
-            segs.append(Segment("".join(line[st.divider_x + 1:]), Style(color="#9ca3af")))
-        return Strip(segs)
+            segs.append(Segment("".join(line[st.divider_x + 1:]), Style(color=theme.SUBTLE)))
+        # cells without a background of their own take the widget's (not the terminal's)
+        return Strip(segs).apply_style(self.rich_style)
 
 
 class GPUTimeline(Vertical, can_focus=True):
     BINDINGS = [
         Binding("left", "cursor(-1)", "◀", show=False),
         Binding("right", "cursor(1)", "▶", show=False),
-        Binding("up,k", "gpu(-1)", "GPU ↑", show=False),
-        Binding("down,j", "gpu(1)", "GPU ↓", show=False),
-        Binding("h", "pan(1)", "History ◀", show=False),
-        Binding("l", "pan(-1)", "History ▶", show=False),
-        Binding("plus,equals_sign,=", "zoom(-1)", "Zoom in", show=False),
-        Binding("minus,-", "zoom(1)", "Zoom out", show=False),
-        Binding("t", "now", "Now"),
+        Binding("up,k", "gpu(-1)", "gpu ↑", show=False),
+        Binding("down,j", "gpu(1)", "gpu ↓", show=False),
+        Binding("h", "pan(1)", "history ◀", show=False),
+        Binding("l", "pan(-1)", "history ▶", show=False),
+        Binding("plus,equals_sign,=", "zoom(-1)", "zoom in", show=False),
+        Binding("minus,-", "zoom(1)", "zoom out", show=False),
+        Binding("t", "now", "now"),
     ]
 
     class CursorMoved(Message):
@@ -182,13 +184,13 @@ class GPUTimeline(Vertical, can_focus=True):
                 continue
             task = tasks.get(a.task_id)
             if a.state == AssignmentState.RUNNING:
-                bg, fg = task_color(a.task_id), "#0b0f19"
+                bg, fg = task_color(a.task_id), theme.MAIN_BG
             elif a.state == AssignmentState.FAILED:
                 bg, fg = FAILED_COLOR, "#fecaca"
             elif a.state == AssignmentState.CANCELLED:
                 bg, fg = STOPPED_COLOR, "#fde68a"
             else:
-                bg, fg = HISTORY_COLOR, "#e5e7eb"
+                bg, fg = HISTORY_COLOR, theme.MAIN_FG
             past.append(PastBlock(a.id, span[0], span[1], task.name if task else a.task_id,
                                   bg, fg, a.display_gpu_ids))
 

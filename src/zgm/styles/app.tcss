@@ -1,35 +1,39 @@
-/* btop-like boxed panels */
+/* btop's default theme (see widgets/theme.py for where each colour comes from).
+   Boxes: rounded, each in its own muted colour, brighter while focused;
+   titles are set into the top line by widgets/theme.box_title. */
 Screen {
-    background: #0b0f19;
+    background: #000000;
+    color: #cccccc;
     layout: vertical;
 }
 
 #view-tabs {
     height: 1;
-    background: #111827;
+    background: #000000;
 }
 
 #status-line {
     height: 1;
-    background: #111827;
+    background: #000000;
     padding: 0 1;
 }
 
 /* ---------- Schedule view ---------- */
 #task-queue {
     height: 8;
-    border: round #3b82f6;
-    border-title-color: #93c5fd;
-    border-title-style: bold;
+    border: round #556d59;          /* cpu_box */
+    border-title-color: #556d59;
+    border-subtitle-color: #556d59;
+    border-subtitle-align: right;
     padding: 0 1;
     scrollbar-size-horizontal: 1;
 }
 #task-queue:focus-within, #task-queue:focus {
-    border: round #60a5fa;
-    border-title-color: #f59e0b;
+    border: round #77ca9b;          /* cpu gradient start */
+    border-title-color: #77ca9b;
 }
 #queue-empty {
-    color: $text-muted;
+    color: #606060;
     padding: 1 2;
     width: auto;
 }
@@ -39,41 +43,42 @@ TaskCard {
     height: 5;
     margin-right: 1;
     padding: 0 1;
-    border: round #374151;
-    background: #111827;
+    border: round #303030;          /* div_line */
+    background: #000000;
 }
 TaskCard:hover {
-    border: round #6b7280;
+    border: round #606060;
 }
 TaskCard.-scheduled {
     opacity: 75%;
 }
 TaskCard.-selected {
-    border: heavy #f59e0b;
-    background: #1f2937;
+    border: round #b54040;          /* hi_fg */
+    background: #1c0e0e;
     opacity: 100%;
 }
 TaskCard.-dragging {
-    border: heavy #22c55e;
+    border: round #77ca9b;
 }
 
 #task-details {
     height: 9;
-    border: round #8b5cf6;
-    border-title-color: #c4b5fd;
-    border-title-style: bold;
+    border: round #6c6c4b;          /* mem_box */
+    border-title-color: #6c6c4b;
     padding: 0 1;
 }
 
 #gpu-timeline {
     height: 1fr;
-    border: round #10b981;
-    border-title-color: #6ee7b7;
-    border-title-style: bold;
+    border: round #805252;          /* proc_box */
+    border-title-color: #805252;
+    border-subtitle-color: #805252;
+    border-subtitle-align: right;
 }
 #gpu-timeline:focus {
-    border: round #34d399;
-    border-title-color: #f59e0b;
+    border: round #d45454;          /* process gradient end */
+    border-title-color: #d45454;
+    border-subtitle-color: #d45454;
 }
 #time-axis {
     height: 2;
@@ -92,14 +97,13 @@ GPURow {
 }
 #config-tree {
     width: 36;
-    border: round #3b82f6;
-    border-title-color: #93c5fd;
-    border-title-style: bold;
-    background: #0b0f19;
+    border: round #5c588d;          /* net_box */
+    border-title-color: #5c588d;
+    background: #000000;
 }
 #config-tree:focus {
-    border: round #60a5fa;
-    border-title-color: #f59e0b;
+    border: round #b0a9de;
+    border-title-color: #b0a9de;
 }
 #config-right {
     width: 1fr;
@@ -109,20 +113,18 @@ GPURow {
 }
 #config-table {
     height: 1fr;
-    border: round #10b981;
-    border-title-color: #6ee7b7;
-    border-title-style: bold;
-    background: #0b0f19;
+    border: round #805252;          /* proc_box */
+    border-title-color: #805252;
+    background: #000000;
 }
 #config-table:focus {
-    border: round #34d399;
-    border-title-color: #f59e0b;
+    border: round #d45454;
+    border-title-color: #d45454;
 }
 #config-preview {
     height: 12;
-    border: round #8b5cf6;
-    border-title-color: #c4b5fd;
-    border-title-style: bold;
+    border: round #6c6c4b;          /* mem_box */
+    border-title-color: #6c6c4b;
     padding: 0 1;
     overflow-y: auto;
 }
