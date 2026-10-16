@@ -32,11 +32,9 @@ def card_lines(task: Task | None, slot: Slot, width: int, now: datetime,
     """
     inner = width - 2
     name = task.name if task else slot.task_id
-    if slot.kind == "running":
-        name = "▶ " + name
     lines = wrap_center(name, inner)
-    if slot.kind == "running":
-        lines.append("running".center(inner))
+    if slot.kind == "running":  # the marker goes here, so it never splits the name
+        lines.append("▶ running".center(inner))
     if len(slot.gpu_ids) > 1:
         lines.append(f"GPU {','.join(map(str, slot.gpu_ids))}".center(inner))
     if note:
@@ -79,11 +77,19 @@ class TimeAxis(Widget):
             elif y == 1:
                 line[x] = "─"
         w = st.card_width
+        # queued columns are numbered like the queue everywhere else (1 = next to
+        # start); running work is labelled as such
+        number, n = {}, 0
+        for col in sorted(self.columns):
+            if self.columns[col].kind != "running":
+                n += 1
+                number[col] = n
         for col, slot in self.columns.items():
             x = st.col_x(col)
             if x is None or x + w > width:
                 continue
-            text = f"#{col + 1}".center(w) if y == 0 else "─" * w
+            label = f"#{number[col]}" if col in number else "running"
+            text = label.center(w) if y == 0 else "─" * w
             for i, ch in enumerate(text):
                 line[x + i] = ch
         segs.append(Segment("".join(line[:st.divider_x]), Style(color=theme.SUBTLE)))
