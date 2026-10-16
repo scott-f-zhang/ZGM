@@ -27,7 +27,7 @@ from pathlib import Path
 from .models import AssignmentState
 from .services.executor import Executor
 from .services.filelock import is_locked
-from .services.gpu_discovery import make_provider
+from .services.gpu_discovery import describe_gpus, make_provider
 from .services.gpu_usage import GPUWatch, describe as describe_procs
 from .services.lease import ExecutorLease, describe
 from .services.scheduler import AssignmentService
@@ -125,7 +125,8 @@ def run(args) -> int:
         executor = Executor(store, svc, runtime, notify=log)
         if args.autostart is not None:
             executor.autostart = args.autostart
-        log(f"zgm daemon (pid {os.getpid()}) runs the queue in {db}: {len(gpu_ids)} GPU(s), "
+        log(f"zgm daemon (pid {os.getpid()}) runs the queue in {db}: "
+            f"{describe_gpus(provider, gpus)}, "
             f"{runtime.name} runtime, auto-start {'on' if executor.autostart else 'paused'}")
         executor.adopt()
         if executor.runs:
@@ -221,6 +222,9 @@ def status(args) -> int:
     print(f"queue:      {db}")
     print(f"executor:   {describe(holder)}" + (f" since {holder.get('since')}"
                                                if holder and holder.get("since") else ""))
+    provider = make_provider(getattr(args, "mock_gpus", None))
+    gpus = provider.discover()
+    print(f"gpus:       {describe_gpus(provider, gpus)}")
     if not db.exists():
         return 0
     store = TaskStore(SqliteStorage(db))
@@ -236,8 +240,6 @@ def status(args) -> int:
         print(f"  {task.name if task else a.task_id}  GPU {gpus}  since {since}"
               + (f"  log {a.log_path}" if a.log_path else ""))
     print(f"queued:     {len(planned)}")
-    provider = make_provider(getattr(args, "mock_gpus", None))
-    gpus = provider.discover()
     GPUWatch(provider, gpus).refresh(store)
     for g in gpus:
         if g.external:

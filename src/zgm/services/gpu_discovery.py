@@ -132,5 +132,16 @@ def make_provider(mock_count: int | None = None) -> NVMLProvider | MockGPUProvid
     return MockGPUProvider(DEFAULT_MOCK_GPUS)
 
 
+def describe_gpus(provider, gpus: list[GPUDevice]) -> str:
+    """One line saying what the GPUs are, and whether they are real."""
+    if isinstance(provider, MockGPUProvider):
+        return (f"{len(gpus)} mock GPUs, not real devices (no NVIDIA driver/NVML found, "
+                "or --mock-gpus / ZGM_MOCK_GPUS set)")
+    counts: dict[str, int] = {}
+    for g in gpus:
+        counts[g.name] = counts.get(g.name, 0) + 1
+    return ", ".join(f"{n} x {name}" for name, n in counts.items()) + " (NVML)"
+
+
 def discover_gpus(mock_count: int | None = None) -> list[GPUDevice]:
     return make_provider(mock_count).discover()

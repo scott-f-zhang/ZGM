@@ -290,6 +290,7 @@ def test_daemon_runs_the_queue_and_hands_over(tmp_path, capsys):
         assert daemon.status(daemon_args(db)) == 0
         out = capsys.readouterr().out
         assert "zgm daemon" in out and "running:    0" in out
+        assert "gpus:       4 mock GPUs, not real devices" in out
     finally:
         proc.terminate() if sys.platform != "win32" else daemon.stop(daemon_args(db))
         proc.wait(timeout=15)

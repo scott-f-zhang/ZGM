@@ -4,16 +4,36 @@ A btop-style terminal UI for planning GPU work on one machine. Task cards sit at
 
 On its own, the TUI only **plans**: an assignment is a planned slot, and moving it never starts or kills a process. To **run** the queue, start `zgm daemon start`, or open the TUI with `--runtime local`. Each task then starts on its planned GPUs as soon as they are free, and keeps running after zgm exits (see [Running your code](#running-your-code), [Auto-start](#auto-start) and [In the background](#in-the-background-zgm-daemon)). Execution goes through a `Runtime` interface; local, mock and Ray backends are included.
 
+> **AI agents and scripts:** read [AGENTS.md](AGENTS.md). It covers using zgm without the interactive TUI: queue a job, wait for it, read its result, stop it, and what each command prints and returns.
+
+## Install
+
+Python 3.10 or newer. Real GPUs need an NVIDIA driver; zgm reads them through NVML.
+
 ```bash
-pip install -e '.[dev]'            # add [ray] for the Ray runtime
-zgm --demo --config-dir examples/configs
-zgm daemon start                                    # run the queue in the background
-zgm --config-dir examples/configs --runtime local   # ...or from the TUI, while it is open
-zgm submit -g 2 -- train.py --lr 3e-4                # queue a task from your project dir
-# or: python -m zgm ...
+git clone <repo-url> zgm && cd zgm
+python3 -m venv .venv
+.venv/bin/pip install -e .          # ".[ray]" adds the Ray runtime, ".[dev]" the tests
+.venv/bin/zgm daemon status         # the "gpus:" line should end in "(NVML)"
 ```
 
-Without NVIDIA drivers or NVML, the app falls back to 4 mock GPUs. You can force a count with `--mock-gpus N` or by setting `ZGM_MOCK_GPUS=N`.
+On Windows: `py -m venv .venv`, then `.venv\Scripts\pip` and `.venv\Scripts\zgm.exe`. Or activate the venv and just type `zgm`.
+
+Without NVIDIA drivers or NVML, zgm falls back to 4 mock GPUs, and `zgm daemon status` says `mock GPUs, not real devices`. You can force a count with `--mock-gpus N` or by setting `ZGM_MOCK_GPUS=N`.
+
+## Quick start
+
+```bash
+zgm --demo --config-dir examples/configs --db demo.db   # look around the TUI with sample tasks (q quits)
+zgm daemon start                                         # run the queue in the background
+zgm submit --python "$PWD/.venv/bin/python" -g 2 -- train.py --lr 3e-4   # queue a job from your project
+zgm daemon status                                        # what runs, what waits, GPUs used by others
+zgm                                                      # watch and rearrange the queue in the TUI
+```
+
+`python -m zgm ...` works too.
+
+Options of the TUI (`zgm`); `zgm submit -h` and `zgm daemon -h` list theirs:
 
 | flag | meaning |
 |---|---|
@@ -54,8 +74,8 @@ Planned work is an **ordered queue**: you choose the GPUs and the position, and 
 | `e` | edit/rename the task (queue card, or the card under the timeline cursor). A running task can only be renamed |
 | `s` | stop the running task under the cursor. You are asked whether to put it back in the queue or delete it |
 | `n` / `d` | new task / delete a waiting task |
-| `p` | with a runtime: pause / resume auto-start |
-| `r` | with a runtime: start the selected planned task now, ahead of the queue (its GPUs must be free) |
+| `p` | pause / resume auto-start (needs something running the queue) |
+| `r` | start the selected planned task ahead of the queue: now if its GPUs are free, else as soon as they are |
 
 Mouse: drag a task card onto a GPU row. Dropping on the left half of a queued card inserts before it; dropping on the right half inserts after it. Drag a queued card to reorder it or move it to another GPU. A drop on the history zone cancels the drag. A placement that can't be made (wrong GPU count, task already running) shows a red ghost and is refused.
 
