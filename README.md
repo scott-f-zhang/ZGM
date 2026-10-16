@@ -1,273 +1,186 @@
 # ZGM
 
-A btop-style terminal UI for planning GPU work on one machine. Task cards sit at the top, details in the middle, and a per-GPU Gantt timeline at the bottom. You place tasks on GPUs and time slots with the keyboard or the mouse. A second view manages experiment YAML configs, which can inherit from each other like classes.
+**A job queue for the GPUs in one machine, with a dashboard in your terminal.**
 
-On its own, the TUI only **plans**: an assignment is a planned slot, and moving it never starts or kills a process. To **run** the queue, start `zgm daemon start`, or open the TUI with `--runtime local`. Each task then starts on its planned GPUs as soon as they are free, and keeps running after zgm exits (see [Running your code](#running-your-code), [Auto-start](#auto-start) and [In the background](#in-the-background-zgm-daemon)). Execution goes through a `Runtime` interface; local, mock and Ray backends are included.
+You have a few GPUs and a list of training runs. Put the runs in the queue, say which GPUs each one gets, and zgm starts each run as soon as its GPUs are free, one after another. You can watch it all on one screen: what's running, what's next, and what already finished.
 
-> **AI agents and scripts:** read [AGENTS.md](AGENTS.md). It covers using zgm without the interactive TUI: queue a job, wait for it, read its result, stop it, with JSON output (`zgm submit --json`, `zgm list --json`) and what each command prints and returns.
+![The zgm dashboard: waiting tasks at the top, details in the middle, and a timeline of the GPUs at the bottom](docs/images/schedule.png)
+
+<sub>Demo data. Left of the red line is what already ran; right of it, what is running and what comes next, in order.</sub>
+
+> **Scripts and AI agents:** see [AGENTS.md](AGENTS.md) for using zgm from the command line only, with JSON output.
+
+## What it does
+
+- **Runs your queue for you.** When one job finishes, the next one waiting for those GPUs starts. Jobs on different GPUs run side by side.
+- **Keeps away from busy GPUs.** If another program is already using a GPU, nothing new starts there until it is done. Running out of GPU memory halfway through a run is the usual way training fails on a shared machine.
+- **Doesn't need to stay open.** Jobs run in the background. Close the dashboard, or log out of the terminal, and they keep going.
+- **Fits how you already work.** Your training script doesn't change. zgm runs it in its folder, with your Python or conda environment, on the GPUs you picked. Your script sees those GPUs as `cuda:0`, `cuda:1`, ….
+- **Learns how long things take.** After a job has run once, zgm estimates when the jobs behind it will start.
+- **Keeps experiment settings tidy.** Settings files can build on each other, so a variant only lists what it changes.
 
 ## Install
 
-Python 3.10 or newer. Real GPUs need an NVIDIA driver; zgm reads them through NVML.
+You need Python 3.10 or newer. For real GPUs you also need the NVIDIA driver; check that `nvidia-smi` works.
 
 ```bash
-git clone <repo-url> zgm && cd zgm
+git clone <repo-url> zgm
+cd zgm
 python3 -m venv .venv
-.venv/bin/pip install -e .          # ".[ray]" adds the Ray runtime, ".[dev]" the tests
-.venv/bin/zgm daemon status         # the "gpus:" line should end in "(NVML)"
+.venv/bin/pip install -e .
 ```
 
-On Windows: `py -m venv .venv`, then `.venv\Scripts\pip` and `.venv\Scripts\zgm.exe`. Or activate the venv and just type `zgm`.
+On Windows, use `py -m venv .venv`, then `.venv\Scripts\pip install -e .`. In the commands below, `zgm` means `.venv/bin/zgm` (Windows: `.venv\Scripts\zgm.exe`). If you activate the environment, plain `zgm` works.
 
-Without NVIDIA drivers or NVML, zgm falls back to 4 mock GPUs, and `zgm daemon status` says `mock GPUs, not real devices`. You can force a count with `--mock-gpus N` or by setting `ZGM_MOCK_GPUS=N`.
+To look around first without touching anything, open the dashboard with made-up tasks (`q` quits):
+
+```bash
+zgm --demo --config-dir examples/configs --db demo.db
+```
 
 ## Quick start
 
+**1. Start zgm in the background.** It runs your queue from now on. You only do this once.
+
 ```bash
-zgm --demo --config-dir examples/configs --db demo.db   # look around the TUI with sample tasks (q quits)
-zgm daemon start                                         # run the queue in the background
-zgm submit --python "$PWD/.venv/bin/python" -g 2 -- train.py --lr 3e-4   # queue a job from your project
-zgm daemon status                                        # what runs, what waits, GPUs used by others
-zgm list                                                 # every task: status, GPUs, exit code
-zgm logs -f TASK_ID                                      # follow a task's output until it ends
-zgm stop TASK_ID                                         # stop it (or take it off the queue)
-zgm                                                      # watch and rearrange the queue in the TUI
+zgm daemon start
+zgm daemon status        # the "gpus:" line should list your real GPUs
 ```
 
-`python -m zgm ...` works too.
+**2. Add a job.** Go to your project folder and tell zgm what to run and how many GPUs it needs:
 
-Options of the TUI (`zgm`); `zgm submit -h` and `zgm daemon -h` list theirs:
+```bash
+cd ~/my-project
+zgm submit --python ~/my-project/.venv/bin/python -g 2 -- train.py --lr 3e-4
+```
 
-| flag | meaning |
+zgm checks that the script and the Python exist, puts the job in line on the GPUs where it can start soonest, and says when that will be.
+
+**3. Watch it.**
+
+```bash
+zgm                     # the dashboard
+zgm list                # or a plain list in the terminal
+zgm logs -f train       # follow a job's output (by name or id)
+```
+
+**4. Stop it** if you need to:
+
+```bash
+zgm stop train
+```
+
+## The dashboard
+
+Run `zgm` to open it. It has two pages: **schedule** (key `1`) and **configs** (key `2`).
+
+The schedule page has three parts:
+
+- **queue**, at the top: jobs that are waiting to be given GPUs. New jobs land here when you add them without GPUs, and so do stopped or failed jobs.
+- **details**, in the middle: everything about the selected job.
+- **timeline**, at the bottom: one row per GPU, with its memory and load on the left. Left of the red line is history, drawn to scale. Right of it are the running jobs, then the queue in the order the jobs will start (`#1` is next). A job using several GPUs spans several rows.
+
+To give a job GPUs, select it in the queue and press `a`. A preview shows where it would go. Move it with the arrow keys and press `Enter`, or drag the card with the mouse.
+
+![Placing a job: the preview shows its place in line and its GPUs before you confirm](docs/images/placing.png)
+
+| key | what it does |
 |---|---|
-| `--db PATH` | SQLite file for tasks, plans and history (default `~/.local/share/zgm/state.db`) |
-| `--config-dir DIR` | experiment YAML configs (default `./configs`) |
-| `--command-template T` | shell command for tasks made from a config that has no `_scheduler_.run` block; `{path}` and `{name}` are substituted |
-| `--demo` | seed example tasks into an empty database |
-| `--runtime none\|local\|mock\|ray` | run the queue from this TUI when no `zgm daemon` does (`local`: processes on this machine). With a daemon running, the TUI is its client either way |
-| `--no-autostart` | pause auto-start: tasks only start with `r` until `p` turns it on (the setting is shared with the daemon) |
-| `--log-dir DIR` | where the local runtime writes task logs (default `logs/` next to the database) |
+| `Tab` | switch between the queue and the timeline |
+| `a` | place the selected job on GPUs |
+| `←` `→` / `↑` `↓` | while placing: move it earlier/later in line, or to other GPUs |
+| `Enter` / `Esc` | confirm / cancel; on the timeline, `Enter` picks up a queued job to move it |
+| `[` `]` | move the selected job one place earlier / later |
+| `u` | take a job off the timeline, back to the queue |
+| `n` / `e` / `d` | new job / edit / delete |
+| `r` | start a job before its turn (as soon as its GPUs are free) |
+| `s` | stop a running job |
+| `p` | pause or resume starting jobs automatically |
+| `h` `l` / `+` `-` | scroll / zoom the history |
+| `q` | quit (running jobs keep running) |
 
-## Views (btop-style)
+The bar at the bottom says whether jobs are being started automatically (**AUTO**), are paused (**PAUSED**), or whether nothing is running the queue (**PLAN ONLY**; start it with `zgm daemon start`).
 
-`1` / `F1` opens **Schedule**. `2` / `F2` opens **Configs**. You can also click the tabs. Each view keeps its own state while you switch.
+## Running your own code
 
-### Schedule
+Each job is three things: **where** to run (a folder), **with which environment** (a Python, or a conda environment), and **what** to run. You give them when you add the job:
 
-The **task queue** at the top holds only tasks that are waiting: new ones, and ones that were stopped, failed or unassigned. Once a task is planned or running it lives on the timeline and leaves the queue; unassigning or stopping it with "put back" returns it.
+```bash
+zgm submit --python /path/to/venv/bin/python -C /path/to/project -- train.py --epochs 90
+zgm submit --conda torch -- -m mypackage.train --bs 64
+zgm submit -g 4 --cmd "torchrun --nproc_per_node={num_gpus} train.py"
+```
 
-The timeline is split at **now** (red `┃`):
+- Anything that isn't a `.py` file or `-m module` runs as a shell command, so `torchrun`, `bash run.sh` and so on work too.
+- Without `--python` or `--conda`, zgm uses the environment you are in when you run `zgm submit`.
+- Your job's output goes to a log file: `zgm logs NAME` shows it, `zgm logs -f NAME` follows it until the job ends.
+- Your job sees only its own GPUs, through `CUDA_VISIBLE_DEVICES`. Use `cuda:0` and up, as usual.
 
-- **Left of now: history, drawn to scale.** These tasks really ran, so their blocks use actual start and end times (grey = finished, brown = stopped, red = failed). Use `h`/`l` to pan back in time and `+`/`-` to zoom; the mouse wheel does the same over this zone.
-- **Right of now: the queue, as fixed-width cards.** Each planned assignment gets one column, in queue order. The card shows only the full task name (centred, wrapped if needed), plus the GPU ids for multi-GPU tasks — no times, since they are only estimates (the Task Details pane still lists the estimated start/end). A multi-GPU task takes the same column on each of its GPU rows. The card width is set by `--card-width` (default 24).
+The dashboard's `n` key asks for the same things in a form.
 
-Planned work is an **ordered queue**: you choose the GPUs and the position, and the start time is derived. A task starts as soon as all of its GPUs are free, after the running work and the queued work ahead of it. Placements therefore never overlap. Moving, inserting or removing a card re-times everything after it.
+## Command line
 
-| key | action |
+| command | what it does |
 |---|---|
-| `Tab` | switch focus between the task queue and the timeline |
-| `←/→` (queue) | select a card |
-| `a` | place the selected task; the ghost starts at the end of the queue |
-| `←/→` / `↑/↓` while placing | move the ghost's queue position / anchor GPU (multi-GPU tasks take the following GPUs) |
-| `Enter` | confirm the placement, or pick up the card under the cursor to move it |
-| `Esc` | cancel the placement |
-| `[` / `]` (or `Shift+←/→`) | move the selected card one place earlier / later |
-| `u` / `Del` | unassign |
-| `t` | reset the view to now |
-| `e` | edit/rename the task (queue card, or the card under the timeline cursor). A running task can only be renamed |
-| `s` | stop the running task under the cursor. You are asked whether to put it back in the queue or delete it |
-| `n` / `d` | new task / delete a waiting task |
-| `p` | pause / resume auto-start (needs something running the queue) |
-| `r` | start the selected planned task ahead of the queue: now if its GPUs are free, else as soon as they are |
+| `zgm` | open the dashboard |
+| `zgm submit [options] -- COMMAND` | add a job (`zgm submit -h` lists the options) |
+| `zgm list` | all jobs: status, GPUs, exit code |
+| `zgm logs NAME [-f]` | a job's output; `-f` follows it until it ends |
+| `zgm stop NAME` | stop a running job, or take a waiting one out of line |
+| `zgm daemon start` / `status` / `stop` | run the queue in the background / check on it / stop it (running jobs keep running) |
 
-Mouse: drag a task card onto a GPU row. Dropping on the left half of a queued card inserts before it; dropping on the right half inserts after it. Drag a queued card to reorder it or move it to another GPU. A drop on the history zone cancels the drag. A placement that can't be made (wrong GPU count, task already running) shows a red ghost and is refused.
+`zgm submit`, `zgm list` and `zgm stop` can print JSON with `--json`; see [AGENTS.md](AGENTS.md).
 
-The axis header numbers the queue positions (`#1`, `#2`, …) and shows how many columns are scrolled out of view (`◀2 3▶`).
+## Experiment settings (configs)
 
-### Estimates come only from run history
-
-You never type in how long a task takes. A task's estimate is the **median duration of earlier completed runs of the same workload**:
-
-- a task made from a config matches on the config's **resolved parameters** (everything except `_scheduler_`) plus its GPU count. The name doesn't matter, and two differently named configs with identical parameters share history;
-- a plain-command task matches on its command plus its GPU count.
-
-With no matching run, the task shows **"no data"** and its end is unknown. Anything queued behind it on the same GPUs then has an unknown start too. Stopped and failed runs are kept in history but are not used for estimates. The Configs view shows the estimate for the selected config's exact parameters in the table title.
-
-### Configs: YAML inheritance
-
-YAML anchors (`<<: *x`) only work inside a single file. Configs here inherit across files through a `_base_` key, mmengine-style:
+The configs page manages YAML settings files that build on each other. A file names the file it builds on in `_base_` and lists only what it changes:
 
 ```yaml
-# resnet50_adamw_bs512.yaml   — "subclass"
-_base_: resnet50_adamw.yaml    # "parent"; a list means multiple bases, merged left→right
+# resnet50_adamw_bs512.yaml
+_base_: resnet50_adamw.yaml   # start from this file...
 data:
-  batch_size: 512              # only the overrides are stored
+  batch_size: 512             # ...and change these
 optimizer:
   lr: 6.0e-4
 ```
 
-- Mappings merge recursively. Scalars and lists are replaced.
-- `_delete_: true` inside a mapping replaces the inherited subtree instead of merging into it.
-- `_scheduler_: {gpus, name, run}` sets the GPU count, task name and launch settings (see [Running your code](#running-your-code)) for a task created from the config. There is deliberately no duration field (see above).
-- Cycles, missing bases and YAML errors are flagged in the tree. They don't crash the app.
+![The configs page: the family tree of settings files, every setting with the file it comes from, and what differs from the parent](docs/images/configs.png)
 
-| key | action |
-|---|---|
-| `Enter` / `e` | edit a value. An inherited key becomes an override in *this* file; the parent is never touched |
-| `x` | remove the override so the key inherits again |
-| `n` | add a key (`optimizer.betas`, YAML value) |
-| `D` | derive a child config. It writes `_base_` plus any `key=value; …` overrides, so later changes to the parent flow through |
-| `Ctrl+S` / `R` | save edited files (comments and order are kept) / reload from disk |
-| `r` | rename the config file; children's `_base_` and tasks created from it are updated to the new name |
-| `T` | create a task from the config and add it to the queue |
-| `v` | toggle the bottom pane between the diff vs the parent and the raw YAML |
-| `/` | filter keys |
-
-The source column shows where each value comes from: `○` inherited (with the file it comes from), `●` overridden here, `✚` new here.
-
-## Running your code
-
-A task says **where**, **in which environment** and **what** to run. Nothing in your code has to import zgm.
-
-| field | meaning |
-|---|---|
-| Run | `train.py --lr 3e-4` or `-m pkg.train ...` runs with the environment's Python. Anything else, e.g. `torchrun --nproc_per_node=$ZGM_NUM_GPUS train.py`, is a shell command |
-| Environment | path to a Python interpreter (`.venv/bin/python`, relative to the working dir; a venv/conda prefix directory also works), `conda:NAME` (or `conda:/path/to/env`), or empty for `python` on PATH |
-| Working dir | where the process starts; relative paths in your code resolve from here |
-| Env vars | extra variables, `A=1; B=2` |
-
-You fill these in with `n` (new task) or `e` (edit). `Ctrl+S` saves the form from any field. A config can carry them in `_scheduler_.run`, which is inherited like everything else, so a base config can set the project and environment once:
+For every setting, the page shows the file it comes from: `○` inherited, `●` changed in this file. Press `e` to edit a value (only this file changes, never its parent), `D` to make a variant, and `T` to turn the file into a job. A settings file can also say how its job runs, in a `_scheduler_` section:
 
 ```yaml
 _scheduler_:
   gpus: 2
   run:
-    cwd: ../project              # relative to this config file (default: zgm's working dir)
-    conda: torch                 # or python: ~/project/.venv/bin/python
-    script: train.py             # or module: pkg.train, or command: "torchrun ..."
-    args: [--config, "{config}"] # quote placeholders: {..} is a mapping in YAML
-    env: {WANDB_MODE: offline}
+    cwd: ../my-project
+    conda: torch
+    script: train.py
+    args: [--config, "{config}"]   # zgm passes the merged settings as one plain file
 ```
 
-Placeholders in `args`, `command` and `env`, substituted when the task starts:
-
-- `{config}`: a snapshot of the config with `_base_` inheritance resolved and `_scheduler_` removed. Your code reads a plain YAML file, and the snapshot records exactly what the run used. The local runtime keeps it next to the log as `<assignment id>.config.yaml`.
-- `{path}`: the config file itself, with `_base_` intact.
-- `{name}`: the task name. `{num_gpus}`: its GPU count.
-
-**What the process gets.** `CUDA_VISIBLE_DEVICES` is set to the GPUs the task was planned on, so your code just uses `cuda:0..n-1`. `CUDA_DEVICE_ORDER=PCI_BUS_ID` makes CUDA number GPUs the way `nvidia-smi` and zgm do. CUDA's default is fastest first, which on a machine with mixed GPUs puts another card behind "GPU 2". It also gets `ZGM_NUM_GPUS`, `ZGM_GPU_IDS`, `ZGM_TASK_ID`, `ZGM_TASK_NAME`, and `PYTHONUNBUFFERED=1` so logs appear as they are written. Exit code 0 means success, and only successful runs feed the duration estimates. stdout and stderr go to `<log-dir>/<assignment id>.log`; the Task Details pane shows the path. Stopping a task (`s`) kills its whole process tree, from any zgm on the database.
-
-**Environments.** With a Python path, its directory goes first on PATH, so tools like `torchrun` come from the same environment. With conda, zgm runs `conda run` once per env to capture the activated variables (activation hooks included) and caches them. The process then starts directly with those variables: no wrapper process, and output is live. zgm finds conda through `CONDA_EXE`, PATH, or the usual install folders (`~/anaconda3`, `~/miniconda3`, `~/miniforge3`, `~/mambaforge`).
-
-`examples/project/train.py` is a stand-in training script. The example configs' `run` blocks point at it, so `zgm --config-dir examples/configs --runtime local` runs end to end.
-
-## Submitting from the command line
-
-From your project directory, in the environment you train in:
+`examples/configs` has a small family of these files, and `examples/project/train.py` a stand-in training script, so you can try the whole thing end to end:
 
 ```bash
-zgm submit -g 2 -- train.py --lr 3e-4            # script + args
-zgm submit -- -m pkg.train --bs 64               # a module
-zgm submit -g 2 --cmd "torchrun --nproc_per_node={num_gpus} train.py"   # any shell command
-zgm submit --config configs/rn50_adamw.yaml      # a config, with its _scheduler_ settings
+zgm --config-dir examples/configs --db demo.db --runtime local   # T on a config, a to place it
 ```
 
-The task gets the same fields as in the TUI, filled in from where you are:
+## Good to know
 
-- **Working dir**: the current directory (`-C DIR` to change it).
-- **Environment**: the active venv (`VIRTUAL_ENV`), else the active conda env (`CONDA_PREFIX`), else `python` on PATH. `--python PATH` or `--conda ENV` set it explicitly. The report says which one was used.
-- **What to run**: `script.py ...` and `-m module ...` run with that environment's Python. Anything else becomes a shell command. Put `--` before RUN when it starts with `-` or uses options zgm also has. Use `--cmd "..."` for pipes, `&&` or variables. Write `{num_gpus}` instead of `$ZGM_NUM_GPUS` there, or quote it, so your shell does not expand it at submit time.
-- `-e KEY=VALUE` (repeatable) adds environment variables, `-n NAME` names the task, and `-g N` sets the GPU count.
+- **GPUs used by other programs.** zgm asks the NVIDIA driver which programs are computing on each GPU. If one isn't a zgm job, the GPU is marked in red on the timeline (`! other`) and nothing new starts there. Programs that only draw on screen (your desktop, a browser) don't count.
+- **Closing things.** Closing the dashboard or running `zgm daemon stop` doesn't stop your jobs. The next time zgm runs the queue, it picks them up and records how they ended.
+- **No NVIDIA GPU?** zgm then shows 4 pretend GPUs so you can try it out, and `zgm daemon status` says so. Jobs don't get real GPUs in that case.
+- **One queue per database.** The queue is kept in `~/.local/share/zgm/state.db`. Pass `--db` to every command to use another one.
+- **Looks.** The dashboard uses your terminal's font and size. A modern terminal (Windows Terminal, iTerm2, kitty, ...) with a monospace font such as Cascadia Mono or JetBrains Mono, at least 100×30 characters, looks best.
 
-Before queueing, zgm builds the process once, so a missing script, working dir, interpreter or conda env is reported right away (exit code 2) instead of when the task would start. `--no-check` skips this.
+## More
 
-**Placement.** By default the task goes to the end of the queue, on the GPUs where it would start first: zgm simulates the queue for every window of adjacent GPUs. A known start beats an unknown one; ties go to the GPUs with less queued work. `--gpu-ids 0,1` picks the GPUs yourself, `--first` puts the task at the front of the queue, and `--hold` only adds it to the waiting queue, for placing in the TUI.
+- [docs/how-it-works.md](docs/how-it-works.md): the details: how the queue decides, how jobs run in the background, how busy GPUs are detected, and the code layout.
+- [AGENTS.md](AGENTS.md): using zgm from scripts and AI agents, and working on its code.
 
-`--config FILE` takes the GPU count, name and `_scheduler_.run` block from the config. If you also give RUN, that runs instead, from the current directory, and can use `{config}` / `{path}`.
-
-A running zgm picks submitted tasks up within a couple of seconds: it reloads when another process writes to the database (SQLite `data_version`). Whoever runs the queue (the daemon, or a TUI with `--runtime local`) then starts them as their GPUs free up. The report's last line says who that is, or that nothing runs the queue yet. `zgm submit` and the TUI must use the same `--db` (the default is the same for both). Without NVML, both default to 4 mock GPUs; `ZGM_MOCK_GPUS` or `--mock-gpus` change that for both.
-
-## Auto-start
-
-Whoever runs the queue (see [In the background](#in-the-background-zgm-daemon)) works through it by itself. Every couple of seconds it starts each planned task that is ready, using the same rule that draws the timeline: none of the task's GPUs is running anything, and no task queued before it is waiting for any of them. So the queue starts in exactly the order you see, a later task never jumps ahead on a GPU that an earlier task is waiting for, and tasks on separate GPUs run side by side.
-
-- The status line shows **AUTO ▶** or **PAUSED ‖**, and who runs the queue, or **PLAN ONLY** if nothing does. `p` toggles auto-start for every zgm on the database; `--no-autostart` pauses it.
-- `r` starts the selected task ahead of its place in the queue: now if its GPUs are free, otherwise as soon as they are. This works while auto-start is paused.
-- A task that cannot start (missing working dir, script, python or conda env) goes back to the waiting queue as *failed* with the reason, and the queue moves on.
-- Nothing starts while you are placing or dragging a card.
-- Nothing starts on a GPU that another program is using; see below.
-
-## GPUs used by other programs
-
-Putting a task on a GPU that something else already fills is how training runs out of memory, so zgm checks before it starts anything. It reads each GPU's **compute processes** from NVML: the CUDA contexts and MPS clients, the same list `nvidia-smi` prints. It then sets aside the processes that belong to zgm's own running tasks:
-
-- the runner and the task process of every running task, and all their descendants: torchrun workers, data loader processes, shells;
-- any process whose environment carries the `ZGM_TASK_ID` of a running task, which also catches processes whose parent has already exited. Ray workers' children are caught this way too.
-
-Every other compute process makes its GPU **in use outside zgm**:
-
-- Nothing new starts there, not even with `r`. In queue order, tasks queued behind one that waits for that GPU wait as well.
-- The timeline shows starts on that GPU as unknown, and the GPU's label shows **! other: N procs, X G**. A notification, or a line in the daemon log, says which process it is, and says so again when the GPU is free.
-- `zgm submit` picks other GPUs if it can, and warns if you pin a task to such a GPU with `--gpu-ids`. `zgm daemon status` lists them.
-
-Limits, from what NVML can see:
-
-- **Graphics-only processes are not counted**: the desktop, browsers, games. Every display GPU has some, and on Windows (WDDM) NVML can't say how much memory each one uses. A game holding 10 GB of VRAM is therefore not detected.
-- On Windows (WDDM), per-process memory is not available. The label then shows the process count without a size; the GPU is blocked either way.
-- If NVML can't list a GPU's processes (old driver, unsupported device), zgm says so once (**? procs unknown** on the label) and does not block that GPU, since it has nothing to go on.
-- In a container without the host's PID namespace, NVML reports host PIDs, which zgm can't match to its own tasks. Those tasks' GPUs are already busy in zgm's queue anyway, but the label may count them as *other*.
-- A program can still grab a GPU right after zgm checked. Nothing short of exclusive compute mode (`nvidia-smi -c EXCLUSIVE_PROCESS`) can reserve a GPU.
-
-With mock GPUs, `ZGM_MOCK_EXTERNAL="1:9000,2:500:4321"` simulates other programs: 9000 MiB on GPU 1, and pid 4321 using 500 MiB on GPU 2.
-
-## In the background: zgm daemon
+## Development
 
 ```bash
-zgm daemon start     # start it in the background (log: daemon.log next to the database)
-zgm daemon status    # who runs the queue, what is running and queued
-zgm daemon stop      # stop it; running tasks keep running
-zgm daemon run       # the same in the foreground (Ctrl+C stops it)
-```
-
-**One executor per database.** Exactly one process starts tasks and records how they end: the *executor*. That is `zgm daemon`, or a TUI with `--runtime` when no daemon runs. It holds an OS lock on `<db>.executor.lock`, and describes itself in `<db>.executor.json`. Every other zgm on the database is a client: TUIs show the queue and send `p`, `r` and `s` through the database, and `zgm submit` adds tasks. When the executor exits or dies, the OS drops its lock and the next one takes over: a TUI with `--runtime` takes over within one tick, and a waiting `zgm daemon` takes over as soon as the lock is free.
-
-**Tasks outlive zgm.** The local runtime starts each task through a small detached runner (`zgm.runtime.runner`). On Windows it gets a new process group, no console window, and leaves the parent's job where that is allowed; on POSIX it gets a new session. Closing the TUI, stopping the daemon or closing the terminal leaves the task running. The runner leaves the run's state next to its log:
-
-| file | contents |
-|---|---|
-| `<id>.log` | the task's output, plus a header and footer from zgm |
-| `<id>.run.json` | runner and task pids, GPUs, start time; then exit code and end time |
-| `<id>.lock` | held by the runner while it lives, so liveness doesn't rely on pids, which get reused |
-| `<id>.cancel` | written by `s`, so a stopped run reads as stopped, not failed |
-| `<id>.config.yaml` | the `{config}` snapshot |
-
-The executor that starts next follows every run still marked running from these files. It records the exit code and the **real** end time, even if the run ended while no executor was watching. A run that left no trace, because it was killed outright or the machine rebooted, is marked failed (`lost` in the history), and its GPUs are freed.
-
-The environment, which can hold secrets, reaches the runner through `<id>.spec.json` (mode 0600), which the runner deletes as soon as it has read it. Mock and Ray runs live inside the executor's process, so they can't be followed after it exits; zgm says so, and `s` frees their GPUs.
-
-## Architecture
-
-```
-widgets/ + screens/    Textual UI (TaskQueue, TaskCard, TaskDetails, GPUTimeline/GPURow, Config*)
-services/              TaskStore · AssignmentService · ConflictValidator · GPU discovery · ConfigRepository
-submit.py              zgm submit: CLI -> Task, environment detection, best GPUs
-services/launcher.py   LaunchSpec -> process: cwd, interpreter, conda env, CUDA_VISIBLE_DEVICES
-services/executor.py   start / follow / stop runs: shared by the daemon and the TUI
-services/lease.py      one executor per database (OS file lock)
-services/gpu_usage.py  GPUs used by other programs (NVML compute processes minus zgm's)
-daemon.py              zgm daemon start|status|stop|run
-runtime/               Runtime protocol · LocalRuntime (+ runner.py) · MockRuntime · RayRuntime
-storage/sqlite.py      tasks · assignments · history · settings
-```
-
-Keyboard and mouse placement both go through `AssignmentService.assign/move`. The UI never imports Ray.
-
-**The local runtime pins exactly**: the planned GPUs are the GPUs used. **Ray** (`--runtime ray`, also for `zgm daemon`) runs each task as a Ray task. Stopping one kills the task's processes too: on POSIX the task is interrupted and kills its own process tree; on Windows, where Ray can't interrupt a running task, the worker is killed and then every process carrying the task's `ZGM_TASK_ID`. Ray runs can't be followed after the executor exits. Ray only counts GPUs it detects, so on a machine without NVIDIA GPUs a task that needs GPUs never starts under Ray. **Ray GPUs are logical resources.** `num_gpus=n` reserves n GPUs, but Ray picks the physical devices. That is why an assignment keeps `preferred_gpu_ids` (your plan) separate from `actual_gpu_ids` (reported by the worker through `ray.get_gpu_ids()`). Strict pinning to physical GPUs would need custom per-device resources.
-
-## Tests
-
-```bash
-pytest -q        # models, scheduler, storage, config inheritance, Textual Pilot UI tests,
-                 # real processes (runner, daemon, cancel); NVML is faked where no GPU exists
-                 # tests/test_ray_adapter.py runs only when ray is installed ([ray] extra)
+.venv/bin/pip install -e ".[dev]"        # add ",ray" to also test the Ray runtime
+.venv/bin/python -m pytest -q            # about a minute
+.venv/bin/python scripts/make_screenshots.py   # redo the pictures above after changing the UI
 ```
