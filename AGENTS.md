@@ -109,7 +109,7 @@ RUN is one of:
 | `--gpu-ids 0,1` | exact GPUs. Default: the adjacent GPUs where the job would start first, avoiding GPUs used by other programs |
 | `-n NAME` | task name (default: the script/module/program name) |
 | `-e KEY=VALUE` | environment variable for the job (repeatable) |
-| `--config FILE` | build the task from a zgm YAML config (see README, "Configs") |
+| `--config FILE` | build the task from a zgm YAML config (see README, "Experiment settings") |
 | `--first` | put it at the front of the queue |
 | `--hold` | only add it to the waiting list; it won't start until placed in the TUI |
 | `--json` | print the queued task as JSON (see [Task records](#task-records)); on error `{"error": ...}` |

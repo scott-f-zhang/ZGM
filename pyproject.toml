@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "zgm"
 version = "0.1.0"
-description = "A btop-style terminal UI for planning local GPU tasks on a timeline"
+description = "A job queue for the GPUs in one machine, with a terminal dashboard"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
