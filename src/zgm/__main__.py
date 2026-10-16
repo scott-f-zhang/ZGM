@@ -1,6 +1,7 @@
 """Command-line entry point: ``zgm`` or ``python -m zgm``.
 
-``zgm [options]`` opens the TUI; ``zgm submit ...`` queues a task, and
+``zgm [options]`` opens the TUI. Without it: ``zgm submit`` queues a task,
+``zgm list`` / ``zgm logs`` / ``zgm stop`` show and control tasks, and
 ``zgm daemon start|status|stop`` runs the queue in the background (see ``-h`` of each).
 """
 
@@ -54,6 +55,10 @@ def main(argv: list[str] | None = None) -> None:
         from .daemon import main as daemon_main
 
         raise SystemExit(daemon_main(argv[1:]))
+    if argv[:1] and argv[0] in ("list", "stop", "logs"):
+        from .commands import main as command_main
+
+        raise SystemExit(command_main(argv[0], argv[1:]))
     args = build_parser().parse_args(argv)
     runtime = None
     if args.runtime == "local":

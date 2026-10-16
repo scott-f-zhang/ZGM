@@ -4,7 +4,7 @@ A btop-style terminal UI for planning GPU work on one machine. Task cards sit at
 
 On its own, the TUI only **plans**: an assignment is a planned slot, and moving it never starts or kills a process. To **run** the queue, start `zgm daemon start`, or open the TUI with `--runtime local`. Each task then starts on its planned GPUs as soon as they are free, and keeps running after zgm exits (see [Running your code](#running-your-code), [Auto-start](#auto-start) and [In the background](#in-the-background-zgm-daemon)). Execution goes through a `Runtime` interface; local, mock and Ray backends are included.
 
-> **AI agents and scripts:** read [AGENTS.md](AGENTS.md). It covers using zgm without the interactive TUI: queue a job, wait for it, read its result, stop it, and what each command prints and returns.
+> **AI agents and scripts:** read [AGENTS.md](AGENTS.md). It covers using zgm without the interactive TUI: queue a job, wait for it, read its result, stop it, with JSON output (`zgm submit --json`, `zgm list --json`) and what each command prints and returns.
 
 ## Install
 
@@ -28,6 +28,9 @@ zgm --demo --config-dir examples/configs --db demo.db   # look around the TUI wi
 zgm daemon start                                         # run the queue in the background
 zgm submit --python "$PWD/.venv/bin/python" -g 2 -- train.py --lr 3e-4   # queue a job from your project
 zgm daemon status                                        # what runs, what waits, GPUs used by others
+zgm list                                                 # every task: status, GPUs, exit code
+zgm logs -f TASK_ID                                      # follow a task's output until it ends
+zgm stop TASK_ID                                         # stop it (or take it off the queue)
 zgm                                                      # watch and rearrange the queue in the TUI
 ```
 

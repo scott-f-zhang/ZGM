@@ -6,7 +6,7 @@ zgm queues jobs on the GPUs of **one machine**. It starts each job on the GPUs i
 
 ## Rules
 
-1. **Never run bare `zgm` (or `python -m zgm`) without a subcommand.** That opens a full-screen interactive TUI that waits for keyboard input. Use only `zgm submit ...` and `zgm daemon ...`, plus the Python snippets below.
+1. **Never run bare `zgm` (or `python -m zgm`) without a subcommand.** That opens a full-screen interactive TUI that waits for keyboard input. Use the subcommands: `zgm submit`, `zgm list`, `zgm logs`, `zgm stop`, `zgm daemon`.
 2. **Use the same `--db` in every command**, or leave it out everywhere. The default is `~/.local/share/zgm/state.db`. Two databases are two separate queues that know nothing about each other.
 3. **Pass `--python ABSOLUTE_PATH` or `--conda ENV` on every `zgm submit`.** Without them, zgm uses the environment the command runs in: an activated venv, else an activated conda env, else `python` on PATH, else zgm's own Python. An agent's shell rarely has the right one activated.
 4. **Use absolute paths** for `--python`, `-C` and `--config`. A relative `--python` is resolved against the task's working directory (`-C`), not the current directory.
@@ -34,114 +34,62 @@ On Windows the executables are `.venv\Scripts\zgm.exe` and `.venv\Scripts\python
 # 1. Start the scheduler once. Idempotent: prints "already running: ..." if it is.
 zgm daemon start
 #    -> started: zgm daemon (pid 12345, local runtime)
-#    -> log: /home/me/.local/share/zgm/daemon.log
 
 # 2. Check the machine (rule 6). It also shows running/queued jobs, and GPUs used by other programs.
 zgm daemon status
 
-# 3. Queue the job. Exit code 0 = queued; 2 = rejected, with the reason on stderr.
-zgm submit --python /home/me/proj/.venv/bin/python -C /home/me/proj -g 2 -n rn50-lr3e-4 \
+# 3. Queue the job. Exit code 0 = queued; 2 = rejected ({"error": ...} on stdout, reason on stderr).
+zgm submit --json --python /home/me/proj/.venv/bin/python -C /home/me/proj -g 2 -n rn50-lr3e-4 \
     -- train.py --lr 3e-4 --out runs/rn50
-#    -> Queued "rn50-lr3e-4" (task 1a2b3c4d)
-#       ...
-#       GPU   0,1, queue #1, starts ~14:05
-#       zgm daemon (pid 12345, local runtime) starts it when its GPUs are free
+#    -> {"id": "1a2b3c4d", "name": "rn50-lr3e-4", "status": "planned", "gpus": [0, 1], ...,
+#        "executor": "zgm daemon (pid 12345, local runtime)", "warnings": []}
+
+# 4. Wait for it and stream its output: waits while it is queued, prints the log as it is
+#    written, and exits when the run ends: 0 if it completed, 1 if it failed or was stopped.
+zgm logs -f 1a2b3c4d
+
+# 5. Read the outcome as data.
+zgm list --json --status completed,failed
 ```
 
-The task id is the 8 hex characters in the first line: match `\(task ([0-9a-f]{8})\)`.
+Wherever a command takes a task ID, a unique prefix of the id or the task's (unique) name works too.
 
-```bash
-# 4. Wait: poll the task list (snippet below) until the task's status is
-#    completed, failed or cancelled.
-# 5. Read the result: "exit_code" (0 = success) and the log file at "log".
-```
+Check `warnings` in the `submit --json` output: a non-empty list means the job won't start soon. The usual reasons are "nothing runs the queue yet", "auto-start is paused", and "GPU N is in use outside zgm".
 
-### List tasks as JSON
+### Task records
 
-There is no `zgm` subcommand for this yet; run this with zgm's Python. The argument is the database path, the default path if omitted.
-
-```bash
-.venv/bin/python - ~/.local/share/zgm/state.db <<'EOF'
-import json, sys
-from datetime import datetime
-from pathlib import Path
-from zgm.runtime.local import read_run
-from zgm.services.task_store import TaskStore
-from zgm.storage.sqlite import SqliteStorage, default_db_path
-
-store = TaskStore(SqliteStorage(sys.argv[1] if len(sys.argv) > 1 else default_db_path()))
-rows = []
-for t in sorted(store.tasks.values(), key=lambda t: t.created_at):
-    runs = store.assignments_for_task(t.id)
-    a = store.active_assignment(t.id) or max(
-        runs, key=lambda r: r.actual_start or datetime.min, default=None)
-    run = read_run(Path(a.log_path).with_suffix("")) if a and a.log_path else None
-    rows.append({
-        "id": t.id, "name": t.name, "status": t.status.value,
-        "last_run": a.state.value if a else None,
-        "gpus": list(a.display_gpu_ids) if a else [],
-        "exit_code": (run or {}).get("exit_code"),
-        "started": a.actual_start.isoformat() if a and a.actual_start else None,
-        "ended": a.actual_end.isoformat() if a and a.actual_end else None,
-        "log": a.log_path if a else None,
-    })
-print(json.dumps(rows, indent=2))
-EOF
-```
-
-Output, one object per task:
+`zgm list --json` prints a JSON array, oldest task first. `zgm submit --json` prints one record, plus `env_source`, `executor`, `autostart` and `warnings`. `zgm stop --json` prints one record plus `action`.
 
 ```json
 {"id": "1a2b3c4d", "name": "rn50-lr3e-4", "status": "completed", "last_run": "completed",
- "gpus": [0, 1], "exit_code": 0, "started": "2026-10-15T14:05:02", "ended": "2026-10-15T16:41:10",
- "log": "/home/me/.local/share/zgm/logs/9f8e7d6c.log"}
+ "gpus": [0, 1], "required_gpus": 2, "queue_position": null, "planned_start": null,
+ "estimate_seconds": 9360, "started": "2026-10-15T14:05:02", "ended": "2026-10-15T16:41:10",
+ "exit_code": 0, "log": "/home/me/.local/share/zgm/logs/9f8e7d6c.log",
+ "command": "python train.py --lr 3e-4 --out runs/rn50", "cwd": "/home/me/proj",
+ "environment": "/home/me/proj/.venv/bin/python", "config": null, "created": "2026-10-15T14:04:58"}
 ```
 
 | `status` | meaning | final? |
 |---|---|---|
-| `planned` | queued on GPUs, waiting for them to be free | no |
+| `planned` | queued on GPUs (`queue_position` 1 = next), waiting for them to be free | no |
 | `running` | its process is running | no |
 | `completed` | exited with code 0 | yes |
 | `failed` | exited non-zero (`exit_code`); or lost (no trace left: killed outright, reboot); or **could not start** (`last_run` is `null`; the reason is in the daemon log) | yes |
 | `pending` | in the waiting list, not queued on GPUs: submitted with `--hold`, or stopped (`last_run` = `cancelled`). It will not start on its own | yes, for an agent |
 | `cancelled` | its run was stopped, and it was not put back in the waiting list | yes |
 
-The log holds the job's stdout and stderr, written as they come, between a zgm header (cwd, command, `CUDA_VISIBLE_DEVICES`) and footer (`# zgm: exited with code N at ...`). It can be read while the job runs.
+`estimate_seconds` is the median of earlier successful runs of the same job, or `null` if there are none. `planned_start` is derived from those estimates and is `null` when unknown.
+
+The log holds the job's stdout and stderr, written as they come, between a zgm header (cwd, command, `CUDA_VISIBLE_DEVICES`) and footer (`# zgm: exited with code N at ...`). `zgm logs ID` prints it at any time, and `zgm logs --path ID` prints where it is.
 
 ### Stop or remove a task
 
-A running task is stopped: its whole process tree is killed, and the task stays listed with `status` `pending` and `last_run` `cancelled`. A task that is not running is removed from the queue.
-
 ```bash
-.venv/bin/python - ~/.local/share/zgm/state.db TASK_ID <<'EOF'
-import sys
-from zgm.models import AssignmentState
-from zgm.runtime.local import LocalRuntime
-from zgm.services.executor import Executor
-from zgm.services.scheduler import AssignmentService
-from zgm.services.task_store import TaskStore
-from zgm.storage.sqlite import SqliteStorage
-
-db, task_id = sys.argv[1], sys.argv[2]
-store = TaskStore(SqliteStorage(db))
-svc = AssignmentService(store, None)
-task = store.tasks.get(task_id)
-if task is None:
-    sys.exit(f"no task {task_id}")
-a = store.active_assignment(task_id)
-if a is not None and a.state == AssignmentState.RUNNING:
-    # kills its process tree; the task stays (status "pending", last run "cancelled")
-    Executor(store, svc, LocalRuntime(".")).stop(task, requeue=True)
-    print(f"stopped {task.name}")
-else:
-    if a is not None:
-        svc.unassign(a.id)
-    store.remove_task(task_id)
-    print(f"removed {task.name}")
-EOF
+zgm stop 1a2b3c4d             # running: kill its process tree; queued: take it off the queue
+zgm stop 1a2b3c4d --remove    # ...and delete the task and its history
 ```
 
-This works whether or not the daemon runs, and the daemon sees the change on its next check (every 2 s).
+A stopped task stays listed with `status` `pending` and `last_run` `cancelled`, unless you pass `--remove`. Exit code 1 means there was nothing to stop: the task is neither running nor queued. This works whether or not the daemon runs, and the daemon sees the change on its next check (every 2 s).
 
 ## Commands
 
@@ -164,12 +112,25 @@ RUN is one of:
 | `--config FILE` | build the task from a zgm YAML config (see README, "Configs") |
 | `--first` | put it at the front of the queue |
 | `--hold` | only add it to the waiting list; it won't start until placed in the TUI |
+| `--json` | print the queued task as JSON (see [Task records](#task-records)); on error `{"error": ...}` |
 | `--no-check` | skip the pre-check below |
 | `--db PATH`, `--mock-gpus N` | as everywhere |
 
 Before queueing, zgm builds the job's process once. It checks that the working directory, the script, the interpreter and the conda env exist (a conda env is activated once to check; that takes a few seconds). On failure it exits **2**, prints `zgm submit: error: <reason>` on stderr, and queues nothing. Exit **0** means queued.
 
 Placeholders in RUN, `--cmd` and `-e` values are filled in when the job starts: `{num_gpus}`, `{name}`, `{path}` (the config file), and `{config}` (the config with `_base_` inheritance resolved, written to a file). Quote them in the shell. Prefer `{num_gpus}` to `$ZGM_NUM_GPUS` inside `--cmd`, because the shell would expand `$ZGM_NUM_GPUS` at submit time.
+
+### `zgm list [--json] [--status S,S]`
+
+All tasks. `--json` prints the records described above; without it, a table: running tasks first, then the queue in order, then waiting tasks, then finished tasks, newest first. `--status` filters, e.g. `--status running,planned`. If the database doesn't exist yet, it lists nothing and creates nothing.
+
+### `zgm logs ID [-f] [-n N] [--path]`
+
+The log of the task's current or latest run. `-f` waits while the task is queued, follows the output, and exits when the run ends: **0** if it completed, **1** if it failed or was stopped. `-n N` prints only the last N lines (before following). `--path` prints the file's path. Exit 1 also means the task has no log yet (it never started).
+
+### `zgm stop ID [--remove] [--json]`
+
+See [Stop or remove a task](#stop-or-remove-a-task). Exit codes: 0 done, 1 nothing to stop, 2 unknown or ambiguous ID.
 
 ### `zgm daemon start | status | stop | run`
 
@@ -206,6 +167,7 @@ daemon log: /home/me/.local/share/zgm/daemon.log
 - `CUDA_VISIBLE_DEVICES`: the GPUs it was queued on, so the job uses `cuda:0` … `cuda:N-1`. `CUDA_DEVICE_ORDER=PCI_BUS_ID`, so zgm's GPU numbers are `nvidia-smi`'s.
 - `ZGM_NUM_GPUS`, `ZGM_GPU_IDS`, `ZGM_TASK_ID`, `ZGM_TASK_NAME`, and `PYTHONUNBUFFERED=1`.
 - With `--python`, that interpreter's directory first on `PATH` (so `torchrun` etc. come from the same env). With `--conda`, the env's fully activated variables.
+- `PYTHONIOENCODING=utf-8`, so Python jobs can print any character (the log is a file, where Python would otherwise use the locale's encoding, e.g. GBK on Chinese Windows).
 - stdin is closed. stdout and stderr go to the log file.
 
 Exit code 0 counts as success. Only successful runs feed the duration estimates.
@@ -249,6 +211,7 @@ Everything lives next to the database (default directory `~/.local/share/zgm/`):
 | job stays `planned` | its GPUs are busy (by zgm jobs ahead of it or by other programs), auto-start is paused, or nothing runs the queue | `zgm daemon status`: look at `executor:`, `running:`, `GPU N in use outside zgm`, `auto-start:` |
 | `failed` with `last_run` `null` | it could not start (e.g. the working dir was deleted after submit) | the reason is in `daemon.log` |
 | `failed`, log ends without `# zgm: exited` | lost: killed outside zgm or machine restarted | resubmit |
+| `zgm logs -f` exits 1 | the run failed or was stopped | `zgm list --json`: `exit_code`, `last_run` |
 | `zgm daemon stop` exits 1: `... runs the queue, not a daemon; close that TUI instead` | a person's TUI runs the queue | leave it; jobs still run, and submitted jobs still start. Ask before closing someone's TUI |
 
 ## Working on zgm's code
@@ -263,7 +226,7 @@ Layout (`src/zgm/`):
 | path | role |
 |---|---|
 | `__main__.py` | CLI entry: TUI, or dispatch to `submit` / `daemon` |
-| `submit.py`, `daemon.py` | the non-interactive commands |
+| `submit.py`, `commands.py`, `daemon.py` | the non-interactive commands (`commands.task_record` is the JSON record) |
 | `models/` | `Task`, `LaunchSpec` (cwd/env/what to run), `Assignment` (a task's place on GPUs), `GPUDevice` |
 | `services/scheduler.py` | the queue: ordered placement, derived start times, `ready_to_start`, `best_gpus` |
 | `services/executor.py` | start / follow / stop runs. Shared by the daemon and the TUI. Only the lease holder calls `tick` |
