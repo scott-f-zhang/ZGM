@@ -14,6 +14,7 @@ first, and a running zgm picks it up within a couple of seconds.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -21,6 +22,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .commands import task_record
 from .models import LaunchSpec, Task, format_estimate
 from .services import launcher
 from .services.config_repo import DEFAULT_COMMAND_TEMPLATE, ConfigRepository
@@ -70,6 +72,10 @@ def build_parser() -> argparse.ArgumentParser:
     where.add_argument("--first", action="store_true", help="put it at the front of the queue")
     where.add_argument("--hold", action="store_true",
                        help="add it to the waiting queue without placing it on a GPU")
+    p.add_argument("--json", action="store_true",
+                   help="print the queued task as JSON (the fields of 'zgm list --json', "
+                        "plus env_source, executor, autostart, warnings); on error, "
+                        '{"error": ...} and exit code 2')
     p.add_argument("--no-check", dest="check", action="store_false",
                    help="don't check the working dir, script and environment now")
     p.add_argument("--db", default=str(default_db_path()),
@@ -209,6 +215,11 @@ def check(task: Task) -> None:
 
 def submit(args: argparse.Namespace) -> str:
     """Queue the task; returns the report printed to the user."""
+    return submit_result(args)[0]
+
+
+def submit_result(args: argparse.Namespace) -> tuple[str, dict]:
+    """Queue the task; returns (the report, the same as data for --json)."""
     task, env_source = make_task(args)
     if args.check:
         check(task)
@@ -225,9 +236,13 @@ def submit(args: argparse.Namespace) -> str:
              f"  env   {task.launch.environment or 'python on PATH'} ({env_source})"]
     if task.launch.env:
         lines.append(f"  vars  {task.launch.env_text}")
+    holder = ExecutorLease(Path(args.db).expanduser()).holder()
+    autostart = store.storage.get_setting("autostart", "1") == "1"
+    data = {"env_source": env_source, "executor": describe(holder) if holder else None,
+            "autostart": autostart, "warnings": []}
     if args.hold:
         lines.append("  waiting in the queue: place it on GPUs in zgm (a)")
-        return "\n".join(lines)
+        return "\n".join(lines), {**task_record(store, task), **data}
 
     if args.gpu_ids:
         try:
@@ -254,24 +269,35 @@ def submit(args: argparse.Namespace) -> str:
     lines.append(f"  est.  {estimate}")
     for g in devices:
         if g.id in a.gpu_ids and g.external:
-            lines.append(f"  !     GPU {g.id} is in use outside zgm "
-                         f"({describe_procs(g.external)}): it waits until that ends")
-    holder = ExecutorLease(Path(args.db).expanduser()).holder()
+            warning = (f"GPU {g.id} is in use outside zgm "
+                       f"({describe_procs(g.external)}): it waits until that ends")
+            data["warnings"].append(warning)
+            lines.append(f"  !     {warning}")
     if holder is None:
-        lines.append("  nothing runs the queue yet: start it with 'zgm daemon start'")
-    elif store.storage.get_setting("autostart", "1") != "1":
-        lines.append(f"  {describe(holder)} runs the queue, but auto-start is paused "
-                     "(p in the TUI)")
+        warning = "nothing runs the queue yet: start it with 'zgm daemon start'"
+        data["warnings"].append(warning)
+        lines.append(f"  {warning}")
+    elif not autostart:
+        warning = f"{describe(holder)} runs the queue, but auto-start is paused (p in the TUI)"
+        data["warnings"].append(warning)
+        lines.append(f"  {warning}")
     else:
         lines.append(f"  {describe(holder)} starts it when its GPUs are free")
-    return "\n".join(lines)
+    return "\n".join(lines), {**task_record(store, task), **data}
 
 
 def main(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        print(submit(args))
+        report, data = submit_result(args)
     except SubmitError as e:
+        if args.json:
+            print(json.dumps({"error": str(e)}))
         parser.exit(2, f"zgm submit: error: {e}\n")
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        enc = sys.stdout.encoding or "utf-8"
+        print(report.encode(enc, errors="replace").decode(enc))
     return 0
