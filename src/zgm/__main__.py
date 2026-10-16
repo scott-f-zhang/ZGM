@@ -1,6 +1,7 @@
 """Command-line entry point: ``zgm`` or ``python -m zgm``.
 
-``zgm [options]`` opens the TUI; ``zgm submit ...`` queues a task (see ``zgm submit -h``).
+``zgm [options]`` opens the TUI; ``zgm submit ...`` queues a task, and
+``zgm daemon start|status|stop`` runs the queue in the background (see ``-h`` of each).
 """
 
 from __future__ import annotations
@@ -27,11 +28,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--demo", action="store_true",
                    help="seed example tasks when the database is empty")
     p.add_argument("--runtime", choices=["none", "local", "mock", "ray"], default="none",
-                   help="execution backend for the 'r' key: local = child processes on "
-                        "this machine (default: none = planning only)")
-    p.add_argument("--no-autostart", dest="autostart", action="store_false",
-                   help="with a runtime, don't start queued tasks when their GPUs free up; "
-                        "start them with r, or turn auto-start on with p")
+                   help="run the queue from this TUI when no zgm daemon does: local = "
+                        "processes on this machine (default: none = leave it to the "
+                        "daemon, or plan only)")
+    p.add_argument("--no-autostart", dest="autostart", action="store_const", const=False,
+                   default=None,
+                   help="pause auto-start: queued tasks only start with r until p turns "
+                        "it on (the setting is shared with the daemon)")
     p.add_argument("--log-dir", default=None,
                    help="where the local runtime writes task logs "
                         "(default: logs/ next to the database)")
@@ -47,6 +50,10 @@ def main(argv: list[str] | None = None) -> None:
         from .submit import main as submit_main
 
         raise SystemExit(submit_main(argv[1:]))
+    if argv[:1] == ["daemon"]:
+        from .daemon import main as daemon_main
+
+        raise SystemExit(daemon_main(argv[1:]))
     args = build_parser().parse_args(argv)
     runtime = None
     if args.runtime == "local":

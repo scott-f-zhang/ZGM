@@ -12,6 +12,7 @@ dependencies = [
     "textual>=8.0",
     "nvidia-ml-py>=12.0",
     "ruamel.yaml>=0.18",
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]

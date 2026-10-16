@@ -12,6 +12,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Static
 
 from ..models import AssignmentState, Task, TaskStatus
+from ..services.lease import describe
 from ..services.scheduler import Result, Slot
 from ..widgets.dialogs import ChoiceScreen, apply_task_edit, edit_task_form, new_task_form
 from ..widgets.gpu_row import GPURow
@@ -164,7 +165,8 @@ class ScheduleScreen(Screen):
         elif self.last_error:
             note = Text(f"✗ {self.last_error}", style="red")
         details.show(task, self.store.assignments_for_task(task.id) if task else [], note,
-                     log=self.app.log_path(task) if task else None)
+                     log=self.app.log_path(task) if task else None,
+                     blocked=self.svc.blocked)
 
     def refresh_status(self) -> None:
         msg = Text()
@@ -179,13 +181,18 @@ class ScheduleScreen(Screen):
             if not ok:
                 msg.append(f"   ✗ {p.result.message}", style="red")
         else:
-            if self.app.runtime is not None:
+            info = self.app.executor_info()
+            if info is not None:
                 if self.app.autostart:
                     msg.append(" AUTO ▶ ", style="bold #0b0f19 on #22c55e")
                 else:
                     msg.append(" PAUSED ‖ ", style="bold #0b0f19 on #f59e0b")
-                msg.append(f" {self.app.runtime.name} · p toggles · r runs now ",
-                           style="dim")
+                who = (f"{info.get('runtime')} runtime" if self.app.is_executor
+                       else f"run by {describe(info)}")
+                msg.append(f" {who} · p toggles · r runs now ", style="dim")
+            else:
+                msg.append(" PLAN ONLY ", style="bold #0b0f19 on #94a3b8")
+                msg.append(" nothing runs: zgm daemon start ", style="dim")
             msg.append(
                 " Tab queue⇄timeline · a assign · Enter pick up · [ ] reorder · u unassign · "
                 "e edit/rename · s stop · "
@@ -432,7 +439,7 @@ class ScheduleScreen(Screen):
 
     def check_action(self, action: str, parameters) -> bool | None:
         if action in ("run", "toggle_autostart"):
-            return self.app.runtime is not None
+            return self.app.can_control_runs
         return True
 
     # events ----------------------------------------------------------------

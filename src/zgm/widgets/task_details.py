@@ -29,6 +29,7 @@ class TaskDetails(Static):
         assignments: list[Assignment] | None = None,
         note: Text | str | None = None,
         log: Path | None = None,
+        blocked: set[int] | None = None,
     ) -> None:
         if task is None:
             self.update(Text("No task selected.", style="dim"))
@@ -73,6 +74,9 @@ class TaskDetails(Static):
             if a.state == AssignmentState.RUNNING:
                 when = f"started {_fmt(a.actual_start)}, " + (
                     f"ends ~{_fmt(a.planned_end)}" if a.planned_end else "end unknown")
+            elif a.planned_start is None and set(a.gpu_ids) & (blocked or set()):
+                gpus = ",".join(map(str, sorted(set(a.gpu_ids) & blocked)))
+                when = f"start unknown (GPU {gpus} is in use outside zgm)"
             elif a.planned_start is None:
                 when = "start unknown (work ahead of it has no run history)"
             else:

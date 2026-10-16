@@ -25,6 +25,8 @@ from .models import LaunchSpec, Task, format_estimate
 from .services import launcher
 from .services.config_repo import DEFAULT_COMMAND_TEMPLATE, ConfigRepository
 from .services.gpu_discovery import make_provider
+from .services.gpu_usage import GPUWatch, describe as describe_procs
+from .services.lease import ExecutorLease, describe
 from .services.scheduler import AssignmentService
 from .services.task_store import TaskStore
 from .storage.sqlite import SqliteStorage, default_db_path
@@ -212,8 +214,10 @@ def submit(args: argparse.Namespace) -> str:
         check(task)
 
     store = TaskStore(SqliteStorage(Path(args.db).expanduser()))
-    gpu_ids = [g.id for g in make_provider(args.mock_gpus).discover()]
-    svc = AssignmentService(store, gpu_ids)
+    provider = make_provider(args.mock_gpus)
+    devices = provider.discover()
+    svc = AssignmentService(store, [g.id for g in devices])
+    svc.blocked, _ = GPUWatch(provider, devices).refresh(store)  # best_gpus avoids them
     store.add_task(task)
     lines = [f'Queued "{task.name}" (task {task.id})',
              f"  run   {task.launch.describe()}",
@@ -239,14 +243,27 @@ def submit(args: argparse.Namespace) -> str:
         raise SubmitError(res.message)
     a = res.assignment
     position = [x.id for x in svc.planned()].index(a.id) + 1
-    if a.planned_start is None:
+    if a.planned_start is None and set(a.gpu_ids) & svc.blocked:
+        when = "start unknown (its GPU is in use outside zgm)"
+    elif a.planned_start is None:
         when = "start unknown (work ahead of it has no run history)"
     else:
         when = f"starts ~{a.planned_start:%H:%M}"
     estimate = format_estimate(store.tasks[task.id], long=True)
     lines.append(f"  GPU   {','.join(map(str, a.gpu_ids))}, queue #{position}, {when}")
     lines.append(f"  est.  {estimate}")
-    lines.append("  zgm --runtime local runs it when its GPUs are free")
+    for g in devices:
+        if g.id in a.gpu_ids and g.external:
+            lines.append(f"  !     GPU {g.id} is in use outside zgm "
+                         f"({describe_procs(g.external)}): it waits until that ends")
+    holder = ExecutorLease(Path(args.db).expanduser()).holder()
+    if holder is None:
+        lines.append("  nothing runs the queue yet: start it with 'zgm daemon start'")
+    elif store.storage.get_setting("autostart", "1") != "1":
+        lines.append(f"  {describe(holder)} runs the queue, but auto-start is paused "
+                     "(p in the TUI)")
+    else:
+        lines.append(f"  {describe(holder)} starts it when its GPUs are free")
     return "\n".join(lines)
 
 

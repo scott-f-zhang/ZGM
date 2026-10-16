@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import random
 
-from ..models import GPUDevice
+from ..models import GPUDevice, GPUProcess
 
 DEFAULT_MOCK_GPUS = 4
 
@@ -41,6 +41,29 @@ class NVMLProvider:
             )
         return out
 
+    def processes(self, gpu_id: int) -> list[GPUProcess]:
+        """Compute processes on the GPU (CUDA contexts and MPS clients), as
+        ``nvidia-smi`` lists them. Raises if NVML can't list them."""
+        from .gpu_usage import process_name
+
+        nv = self._nvml
+        h = nv.nvmlDeviceGetHandleByIndex(gpu_id)
+        found: dict[int, GPUProcess] = {}
+        for query in (nv.nvmlDeviceGetComputeRunningProcesses,
+                      nv.nvmlDeviceGetMPSComputeRunningProcesses):
+            try:
+                procs = query(h)
+            except nv.NVMLError_NotSupported:
+                if query is nv.nvmlDeviceGetComputeRunningProcesses:
+                    raise
+                continue  # MPS isn't supported everywhere; the compute list is
+            for p in procs:
+                mem = p.usedGpuMemory
+                prev = found.get(p.pid)
+                if prev is None or (mem or 0) > (prev.used_memory or 0):
+                    found[p.pid] = GPUProcess(p.pid, process_name(p.pid), mem)
+        return list(found.values())
+
     def refresh(self, devices: list[GPUDevice]) -> None:
         nv = self._nvml
         for d in devices:
@@ -58,6 +81,17 @@ class MockGPUProvider:
     def __init__(self, count: int = DEFAULT_MOCK_GPUS, seed: int = 0) -> None:
         self.count = count
         self._rng = random.Random(seed)
+        # processes "on" the fake GPUs; ZGM_MOCK_EXTERNAL="1:8000,2:500:4321" puts a
+        # process using 8000 MiB on GPU 1 and one (pid 4321) using 500 MiB on GPU 2
+        self.fake_processes: dict[int, list[GPUProcess]] = {}
+        for item in filter(None, os.environ.get("ZGM_MOCK_EXTERNAL", "").split(",")):
+            gpu, mib, *pid = item.split(":")
+            self.fake_processes.setdefault(int(gpu), []).append(GPUProcess(
+                int(pid[0]) if pid else 999_000 + int(gpu), "mock-external",
+                int(mib) * 1024**2))
+
+    def processes(self, gpu_id: int) -> list[GPUProcess]:
+        return list(self.fake_processes.get(gpu_id, []))
 
     def discover(self) -> list[GPUDevice]:
         return [
