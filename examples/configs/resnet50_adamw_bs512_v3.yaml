@@ -1,1 +1,0 @@
-_base_: resnet50_adamw_bs512.yaml
