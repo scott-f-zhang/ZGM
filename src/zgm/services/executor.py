@@ -145,6 +145,8 @@ class Executor:
         """Hand a planned assignment to the runtime. If it can't start (bad
         working dir, missing python/conda env, ...), the task goes back to the
         waiting queue as failed so it doesn't hold up the work behind it."""
+        if self.store.storage.assignment_state(a.id) != AssignmentState.PLANNED:
+            return False  # started, stopped or removed by another zgm meanwhile
         self.refresh_fingerprint(task)  # the run uses the config as it is *now*
         try:
             handle = self.runtime.submit(task, a)

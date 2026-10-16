@@ -61,6 +61,17 @@ def default_db_path() -> Path:
     return Path.home() / ".local" / "share" / "zgm" / "state.db"
 
 
+_STAGE = {"planned": 0, "running": 1, "completed": 2, "failed": 2, "cancelled": 2}
+
+
+def _may_become(stored: str, new: str) -> bool:
+    """Forward only; a final state is final (stopping a run that just completed
+    must not turn it into "cancelled")."""
+    if _STAGE[stored] == 2:
+        return new == stored
+    return _STAGE[new] >= _STAGE[stored]
+
+
 def _dt(s: str | None) -> datetime | None:
     return datetime.fromisoformat(s) if s else None
 
@@ -167,7 +178,39 @@ class SqliteStorage:
         ]
 
     # assignments -----------------------------------------------------------
-    def save_assignment(self, a: Assignment) -> None:
+    def save_assignment(self, a: Assignment) -> bool:
+        """Write ``a``, unless that would move it back: an assignment only goes
+        planned -> running -> one final state, and several processes write
+        here (TUI, daemon, zgm submit), so a copy read before another process
+        moved it on must not undo that. Returns False if the write was refused."""
+        self.conn.execute("BEGIN IMMEDIATE")  # check and write as one step
+        try:
+            row = self.conn.execute("SELECT state FROM assignments WHERE id=?",
+                                    (a.id,)).fetchone()
+            if row is not None and not _may_become(row["state"], a.state.value):
+                self.conn.rollback()
+                return False
+            self._write_assignment(a)
+        except BaseException:
+            self.conn.rollback()
+            raise
+        self.conn.commit()
+        return True
+
+    def update_planned(self, a: Assignment) -> bool:
+        """Update a queued assignment's place in the queue (GPUs, order, times),
+        only while it is still queued: it may have started, or been removed, in
+        another process. Returns False if it no longer is."""
+        cur = self.conn.execute(
+            "UPDATE assignments SET gpu_ids=?, preferred_gpu_ids=?, planned_start=?,"
+            " planned_end=?, seq=?, run_now=? WHERE id=? AND state='planned'",
+            (json.dumps(list(a.gpu_ids)), json.dumps(list(a.preferred_gpu_ids)),
+             _iso(a.planned_start), _iso(a.planned_end), a.seq, int(a.run_now), a.id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def _write_assignment(self, a: Assignment) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO assignments (id, task_id, gpu_ids, preferred_gpu_ids,"
             " actual_gpu_ids, planned_start, planned_end, actual_start, actual_end, state, seq,"
@@ -188,7 +231,6 @@ class SqliteStorage:
                 int(a.run_now),
             ),
         )
-        self.conn.commit()
 
     def assignment_state(self, assignment_id: str) -> AssignmentState | None:
         """The stored state, which another process may have changed."""
