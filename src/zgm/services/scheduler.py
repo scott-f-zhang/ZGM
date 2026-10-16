@@ -89,6 +89,9 @@ class AssignmentService:
         self.store = store
         self.gpu_ids = sorted(gpu_ids) if gpu_ids is not None else None
         self.validator = validator or ConflictValidator()
+        # GPUs other programs use (see GPUWatch): nothing starts there, and when
+        # they will be free is unknown
+        self.blocked: set[int] = set()
 
     # queue views -----------------------------------------------------------
     def planned(self) -> list[Assignment]:
@@ -113,7 +116,7 @@ class AssignmentService:
         none of its GPUs runs anything and no assignment queued before it waits
         for any of them. Assignments returned together never share a GPU.
         """
-        claimed = self.busy_gpus()
+        claimed = self.busy_gpus() | self.blocked
         ready = []
         for a in self.planned():
             gpus = set(a.gpu_ids)
@@ -137,7 +140,7 @@ class AssignmentService:
         estimate; everything queued behind it on that GPU is then unknown too.
         """
         now = (now or datetime.now()).replace(second=0, microsecond=0)
-        free_at: dict[int, datetime | None] = {}
+        free_at: dict[int, datetime | None] = {g: None for g in self.blocked}
         slots: list[Slot] = []
 
         def ready(gpus) -> datetime | None:

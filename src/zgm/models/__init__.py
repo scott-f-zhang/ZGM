@@ -1,6 +1,6 @@
 from .assignment import ACTIVE_STATES, Assignment, AssignmentState
 from .config import ConfigNode, Origin, ProvenanceEntry
-from .gpu import GPUDevice
+from .gpu import GPUDevice, GPUProcess
 from .launch import LaunchSpec
 from .task import (
     Task, TaskStatus, command_fingerprint, config_fingerprint, format_duration, format_estimate,
@@ -13,6 +13,7 @@ __all__ = [
     "AssignmentState",
     "ConfigNode",
     "GPUDevice",
+    "GPUProcess",
     "LaunchSpec",
     "Origin",
     "ProvenanceEntry",

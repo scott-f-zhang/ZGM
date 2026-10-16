@@ -169,6 +169,9 @@ def build_process(task: Task, gpu_ids: Sequence[int] | None,
     if spec.python:
         exe_dir = Path(python).parent
         _prepend_path(env, exe_dir, exe_dir / "Scripts")
+    # number GPUs like nvidia-smi/NVML (PCI bus order), not CUDA's default
+    # fastest-first, so "GPU 2" is the same card for zgm, nvidia-smi and the task
+    env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     env.update({k: fill(v, values) for k, v in spec.env.items()})
     env.update({
         "PYTHONUNBUFFERED": "1",

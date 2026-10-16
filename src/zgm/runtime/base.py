@@ -25,6 +25,7 @@ class RunState(str, Enum):
 class RunHandle:
     assignment_id: str
     ref: object  # runtime-specific handle
+    task_id: str | None = None
 
 
 class Runtime(Protocol):

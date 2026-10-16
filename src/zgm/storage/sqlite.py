@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..models import Assignment, AssignmentState, LaunchSpec, Task, TaskStatus
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # planned times and estimates are nullable: no run history means "unknown"
 TABLES = {
@@ -37,7 +37,9 @@ TABLES = {
     actual_start TEXT,
     actual_end TEXT,
     state TEXT NOT NULL,
-    seq INTEGER NOT NULL DEFAULT 0
+    seq INTEGER NOT NULL DEFAULT 0,
+    log_path TEXT,
+    run_now INTEGER NOT NULL DEFAULT 0
 )""",
     "history": """CREATE TABLE history (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,6 +48,11 @@ TABLES = {
     task_id TEXT,
     assignment_id TEXT,
     detail TEXT
+)""",
+    # shared by every zgm on this database (TUI, daemon, submit)
+    "settings": """CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 )""",
 }
 
@@ -163,8 +170,8 @@ class SqliteStorage:
     def save_assignment(self, a: Assignment) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO assignments (id, task_id, gpu_ids, preferred_gpu_ids,"
-            " actual_gpu_ids, planned_start, planned_end, actual_start, actual_end, state, seq)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " actual_gpu_ids, planned_start, planned_end, actual_start, actual_end, state, seq,"
+            " log_path, run_now) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 a.id,
                 a.task_id,
@@ -177,9 +184,17 @@ class SqliteStorage:
                 _iso(a.actual_end),
                 a.state.value,
                 a.seq,
+                a.log_path,
+                int(a.run_now),
             ),
         )
         self.conn.commit()
+
+    def assignment_state(self, assignment_id: str) -> AssignmentState | None:
+        """The stored state, which another process may have changed."""
+        row = self.conn.execute("SELECT state FROM assignments WHERE id=?",
+                                (assignment_id,)).fetchone()
+        return AssignmentState(row["state"]) if row else None
 
     def delete_assignment(self, assignment_id: str) -> None:
         self.conn.execute("DELETE FROM assignments WHERE id=?", (assignment_id,))
@@ -203,9 +218,21 @@ class SqliteStorage:
                     actual_end=_dt(r["actual_end"]),
                     state=AssignmentState(r["state"]),
                     seq=r["seq"],
+                    log_path=r["log_path"],
+                    run_now=bool(r["run_now"]),
                 )
             )
         return out
+
+    # settings --------------------------------------------------------------
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        row = self.conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
+                          (key, value))
+        self.conn.commit()
 
     # history ---------------------------------------------------------------
     def log_event(

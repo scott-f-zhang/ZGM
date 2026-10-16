@@ -12,13 +12,27 @@ import pytest
 
 from zgm.models import Assignment, LaunchSpec, Task, command_fingerprint
 from zgm.runtime.base import RunState
-from zgm.runtime.local import LocalRuntime
+from zgm.runtime.local import LocalRuntime, read_run
 from zgm.services import launcher
 from zgm.services.config_repo import ConfigRepository
 from zgm.storage.sqlite import SqliteStorage
 from zgm.widgets.dialogs import _task_fields
 
 PY = sys.executable
+
+
+def pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import subprocess
+
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                             capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 # LaunchSpec -----------------------------------------------------------------
@@ -266,9 +280,12 @@ def test_local_runtime_cancel_kills_the_process_tree(tmp_path):
     a = _assignment(t)
     handle = rt.submit(t, a)
     time.sleep(1.0)
+    info = read_run(handle.ref)
+    assert pid_alive(info["runner_pid"]) and pid_alive(info["child_pid"])
     rt.cancel(handle)
     assert rt.status(handle) == RunState.CANCELLED
-    assert handle.ref.proc.poll() is not None
+    info = read_run(handle.ref)
+    assert not pid_alive(info["runner_pid"]) and not pid_alive(info["child_pid"])
     assert "stopped" in rt.log_path(a.id).read_text(encoding="utf-8")
 
 

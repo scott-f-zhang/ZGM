@@ -125,7 +125,12 @@ class GPURow(Widget):
 
     def needed_height(self) -> int:
         content = [card_rows_needed(c) for c in self.cards if self.shows_content(c)]
-        return max([LABEL_LINES, *content]) + 1  # +1 gutter line between rows
+        return max([self.label_lines, *content]) + 1  # +1 gutter line between rows
+
+    @property
+    def label_lines(self) -> int:
+        g = self.gpu
+        return LABEL_LINES + (1 if g.external or not g.processes_visible else 0)
 
     def column_at(self, screen_x: int) -> int:
         return screen_x - self.region.x - LABEL_WIDTH
@@ -148,6 +153,14 @@ class GPURow(Widget):
              (" " + _bar(g.utilization / 100, 8), base + Style(color="#34d399")),
              (f" {g.utilization}%", base)],
         ]
+        if g.external:
+            known = [p.used_memory for p in g.external if p.used_memory is not None]
+            mem = f" {sum(known) / 1024**3:.1f}G" if known else ""
+            n = len(g.external)
+            lines.append([(f" ! other: {n} proc{'s' if n > 1 else ''}{mem}",
+                           base + Style(color="#f87171", bold=True))])
+        elif not g.processes_visible:
+            lines.append([(" ? procs unknown", base + Style(color="#fbbf24"))])
         parts = lines[y] if y < len(lines) else []
         segs, used = [], 0
         for text, style in parts:

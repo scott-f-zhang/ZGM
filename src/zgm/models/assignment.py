@@ -43,6 +43,8 @@ class Assignment:
     actual_gpu_ids: tuple[int, ...] | None = None
     state: AssignmentState = AssignmentState.PLANNED
     seq: int = 0  # position in the planned queue (global across GPUs)
+    log_path: str | None = None  # where the run's output went (local runtime)
+    run_now: bool = False  # asked to start ahead of the queue (r, from any zgm)
 
     def __post_init__(self) -> None:
         self.gpu_ids = tuple(sorted(self.gpu_ids))
