@@ -75,6 +75,15 @@ TaskCard.-dragging {
     border-subtitle-color: #805252;
     border-subtitle-align: right;
 }
+#cluster-panel {
+    height: auto;
+    max-height: 9;
+    border: round #5c588d;          /* net_box */
+    border-title-color: #5c588d;
+    padding: 0 1;
+    display: none;
+}
+
 #gpu-timeline:focus {
     border: round #d45454;          /* process gradient end */
     border-title-color: #d45454;

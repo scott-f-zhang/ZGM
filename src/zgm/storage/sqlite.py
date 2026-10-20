@@ -1,15 +1,17 @@
-"""SQLite persistence for tasks, assignments and an append-only history log."""
+"""SQLite persistence for tasks, assignments, an append-only history log, and
+(cluster mode) the groups of GPUs on other hosts."""
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from ..models import Assignment, AssignmentState, LaunchSpec, Task, TaskStatus
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 # planned times and estimates are nullable: no run history means "unknown"
 TABLES = {
@@ -54,11 +56,41 @@ TABLES = {
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 )""",
+    # cluster mode (cluster/core.py): groups of GPUs as the executor last saw them.
+    # state: "up" (its GPUs are used), "down" (exists, not usable), "gone". A
+    # group with GPUs in use holds GPU ids gpu_base.. (one per GPU in probe)
+    "gpu_groups": """CREATE TABLE gpu_groups (
+    backend TEXT NOT NULL,
+    key TEXT NOT NULL,
+    state TEXT NOT NULL,
+    host TEXT NOT NULL DEFAULT '',
+    transport TEXT NOT NULL DEFAULT 'ssh',
+    note TEXT NOT NULL DEFAULT '',
+    problem TEXT NOT NULL DEFAULT '',
+    info TEXT,
+    gpu_base INTEGER,
+    probe TEXT,
+    probed_at TEXT,
+    seen_at TEXT NOT NULL,
+    PRIMARY KEY (backend, key)
+)""",
 }
+
+GROUP_COLUMNS = ("backend", "key", "state", "host", "transport", "note", "problem", "info",
+                 "gpu_base", "probe", "probed_at", "seen_at")
+GROUP_JSON = ("info", "probe")
+
+
+def state_dir() -> Path:
+    """Where zgm keeps its database, logs and daemon log: ``$ZGM_HOME``, else
+    ``~/.local/share/zgm``. On storage other users can see, use a directory of
+    your own, e.g. ``/shared/$USER/zgm``."""
+    env = os.environ.get("ZGM_HOME")
+    return Path(env).expanduser() if env else Path.home() / ".local" / "share" / "zgm"
 
 
 def default_db_path() -> Path:
-    return Path.home() / ".local" / "share" / "zgm" / "state.db"
+    return state_dir() / "state.db"
 
 
 _STAGE = {"planned": 0, "running": 1, "completed": 2, "failed": 2, "cancelled": 2}
@@ -83,7 +115,8 @@ def _iso(d: datetime | None) -> str | None:
 class SqliteStorage:
     def __init__(self, path: str | Path = ":memory:") -> None:
         if str(path) != ":memory:":
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            # private: logs hold the tasks' output, the runners' files their pids
+            Path(path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.path = str(path)
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
@@ -274,6 +307,31 @@ class SqliteStorage:
     def set_setting(self, key: str, value: str) -> None:
         self.conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
                           (key, value))
+        self.conn.commit()
+
+    # gpu groups ------------------------------------------------------------
+    def gpu_groups(self, backend: str) -> list[dict]:
+        """The backend's rows of ``gpu_groups``, JSON columns decoded."""
+        rows = self.conn.execute("SELECT * FROM gpu_groups WHERE backend=? ORDER BY key",
+                                 (backend,)).fetchall()
+        out = []
+        for r in rows:
+            row = dict(r)
+            for c in GROUP_JSON:
+                row[c] = json.loads(row[c]) if row[c] else ({} if c == "info" else None)
+            out.append(row)
+        return out
+
+    def save_gpu_groups(self, rows: list[dict]) -> None:
+        """Insert or replace these rows (one transaction, so readers see all or none)."""
+        if not rows:
+            return
+        cols = ", ".join(GROUP_COLUMNS)
+        marks = ",".join("?" * len(GROUP_COLUMNS))
+        self.conn.executemany(
+            f"INSERT OR REPLACE INTO gpu_groups ({cols}) VALUES ({marks})",
+            [tuple(json.dumps(r[c]) if c in GROUP_JSON and r.get(c) is not None else r.get(c)
+                   for c in GROUP_COLUMNS) for r in rows])
         self.conn.commit()
 
     # history ---------------------------------------------------------------

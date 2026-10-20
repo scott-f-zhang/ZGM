@@ -13,10 +13,11 @@ from .screens.config import ConfigScreen
 from .screens.schedule import ScheduleScreen
 from .services.config_repo import DEFAULT_COMMAND_TEMPLATE, ConfigRepository
 from .services.executor import Executor
-from .services.gpu_discovery import MockGPUProvider, make_provider
+from .services.gpu_discovery import MockGPUProvider
 from .services.gpu_usage import GPUWatch
 from .services.lease import ExecutorLease
 from .services.scheduler import AssignmentService
+from .cluster.core import ClusterProvider, ClusterWatch, gpu_source
 from .services.task_store import TaskStore, seed_demo
 from .storage.sqlite import SqliteStorage
 from .widgets.theme import install_box_titles, textual_theme
@@ -49,11 +50,18 @@ class ZGMApp(App):
         autostart: bool | None = None,
     ) -> None:
         super().__init__()
-        self.provider = make_provider(mock_gpus)
-        self.gpu_source = "mock" if isinstance(self.provider, MockGPUProvider) else "NVML"
-        self.gpus = self.provider.discover()
         self.store = TaskStore(storage or SqliteStorage(":memory:"))
-        self.assignment_service = AssignmentService(self.store, [g.id for g in self.gpus])
+        self.provider = gpu_source(self.store.storage, mock_gpus)
+        # cluster mode: GPUs on several hosts (cluster/)
+        self.cluster = self.provider if isinstance(self.provider, ClusterProvider) else None
+        self.cluster_watch: ClusterWatch | None = None  # while this TUI runs the queue
+        local = self.cluster.local if self.cluster else self.provider
+        self.gpu_source = ((f"{self.cluster.backend.name} · " if self.cluster else "")
+                           + ("mock" if isinstance(local, MockGPUProvider) else "NVML"))
+        self.gpus = self.provider.discover()
+        self.assignment_service = AssignmentService(
+            self.store, [g.id for g in self.gpus],
+            node_of=self.cluster.node_of(self.gpus) if self.cluster else None)
         self.gpu_watch = GPUWatch(self.provider, self.gpus)
         self.assignment_service.blocked, self._gpu_changes = self.gpu_watch.refresh(self.store)
         if demo:
@@ -85,6 +93,8 @@ class ZGMApp(App):
             self.set_interval(self.stats_interval, self.tick)
 
     def on_unmount(self) -> None:
+        if self.cluster_watch is not None:
+            self.cluster_watch.close()
         self.lease.release()  # tasks keep running; the next executor attaches to them
 
     # who runs the queue ---------------------------------------------------------
@@ -95,6 +105,8 @@ class ZGMApp(App):
 
     @runtime.setter
     def runtime(self, runtime: Runtime | None) -> None:
+        if self.cluster is not None and hasattr(runtime, "locate"):
+            runtime.locate = self.cluster.locate  # tasks on other hosts start there
         self._runtime = runtime
         self.executor.runtime = runtime
         self.lead()
@@ -134,10 +146,32 @@ class ZGMApp(App):
 
             self.executor.runtime = LocalRuntime(info.get("log_dir") or ".")
 
+    def follow_cluster(self) -> None:
+        """Cluster mode, while this TUI runs the queue: keep track of the groups."""
+        if self.cluster is None or not self.is_executor:
+            return
+        if self.cluster_watch is None:
+            self.cluster_watch = ClusterWatch(self.store, self.cluster.backend, self.cluster.local)
+        for message, severity in self.cluster_watch.refresh(self.assignment_service):
+            self.notify(message, severity=severity, timeout=10)
+        self.cluster.invalidate()
+
+    def sync_gpus(self) -> None:
+        if not self.provider.sync(self.gpus):
+            return
+        self.assignment_service.set_gpus(
+            [g.id for g in self.gpus],
+            self.cluster.node_of(self.gpus) if self.cluster else None)
+        self.assignment_service.recompute(persist=self.is_executor)
+        screen = self.screen
+        if isinstance(screen, ScheduleScreen):
+            screen.gpus_changed()
+
     def tick(self) -> None:
-        self.provider.refresh(self.gpus)
         if self.store.sync():  # changed by another zgm (submit, daemon, another TUI)
             self.assignment_service.recompute()
+        self.follow_cluster()
+        self.sync_gpus()
         self.assignment_service.blocked, changes = self.gpu_watch.refresh(self.store)
         for message in changes:
             self.notify(message, severity="warning", timeout=10)
@@ -152,6 +186,7 @@ class ZGMApp(App):
         screen = self.screen
         if isinstance(screen, ScheduleScreen) and screen.is_mounted:
             screen.refresh_timeline()
+            screen.refresh_cluster()
 
     def _placing(self) -> bool:
         """Nothing starts while the user is placing a card, so it can't start

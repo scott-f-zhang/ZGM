@@ -138,6 +138,21 @@ class GPUTimeline(Vertical, can_focus=True):
         self.state.ensure_cursor_visible()
         self._changed()
 
+    def set_gpus(self, gpus: list[GPUDevice]) -> None:
+        """The GPUs changed (cluster mode: a host came or went): new rows."""
+        self.gpus = gpus
+        ids = [g.id for g in gpus]
+        if ids and self.state.cursor_gpu not in ids:
+            self.state.cursor_gpu = ids[0]
+        self.call_later(self._swap_rows, [GPURow(g, self.state) for g in gpus])
+
+    async def _swap_rows(self, rows: list[GPURow]) -> None:
+        container = self.query_one("#gpu-rows")
+        await container.remove_children()  # first: the new rows reuse the ids
+        self.rows = rows
+        await container.mount_all(rows)
+        self._changed()
+
     def row_for_gpu(self, gpu_id: int) -> GPURow:
         return next(r for r in self.rows if r.gpu.id == gpu_id)
 

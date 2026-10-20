@@ -127,7 +127,7 @@ class Executor:
             return []
         started = []
         for a in [x for x in self.svc.planned() if x.run_now]:
-            if not set(a.gpu_ids) & (self.svc.busy_gpus() | self.svc.blocked):
+            if not set(a.gpu_ids) & (self.svc.busy_gpus() | self.svc.unavailable()):
                 task = self.store.tasks.get(a.task_id)
                 if task and self.start(task, a):
                     started.append(task)
@@ -185,7 +185,7 @@ class Executor:
             return "Place the task on the timeline before running it.", "warning"
         a.run_now = True
         self.store.save_assignment(a, "run_now")
-        busy = sorted(set(a.gpu_ids) & (self.svc.busy_gpus() | self.svc.blocked))
+        busy = sorted(set(a.gpu_ids) & (self.svc.busy_gpus() | self.svc.unavailable()))
         if busy:
             outside = sorted(set(busy) & self.svc.blocked)
             why = f" (GPU {','.join(map(str, outside))} is in use outside zgm)" if outside else ""

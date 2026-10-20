@@ -131,6 +131,40 @@ The executor that starts next follows every run still marked running from these 
 
 The environment, which can hold secrets, reaches the runner through `<id>.spec.json` (mode 0600), which the runner deletes as soon as it has read it. Mock and Ray runs live inside the executor's process, so they can't be followed after it exits; zgm says so, and `s` frees their GPUs.
 
+## Several hosts: cluster mode
+
+One zgm queue can span several machines. It is built in layers, so that supporting another kind of setup means adding one module:
+
+| layer | what it does | today | to add |
+|---|---|---|---|
+| **backend** (`cluster/<name>.py`) | which groups of GPUs exist now, and on which host | `slurm`: your running Slurm jobs | a class implementing `cluster.base.Backend`, one line in `cluster.BACKENDS` |
+| **transport** (`cluster/transport.py`) | how a shell command runs on a host, non-interactively | `ssh`, `local` | a class with `host`, `argv(script)` and `run(script, timeout)` |
+| **GPU provider** (`services/gpu_discovery.py`) | a machine's GPUs and their processes, read on that machine | NVML, mock | a provider class (e.g. for non-NVIDIA GPUs) |
+| **core** (`cluster/core.py`) | probing, zgm GPU ids, placement, groups that go away; the same for every backend | | nothing |
+
+`zgm daemon start --cluster slurm` turns it on for the database (`--cluster none` turns it off). Then:
+
+- **Groups.** The executor asks the backend for its groups (`backend.interval`; Slurm: every 30 s) and keeps them in the `gpu_groups` table. The dashboard shows them in a box under the timeline, titled with the backend's name, and `zgm daemon status` in its `cluster:` block.
+- **Probes.** Every 10 seconds the executor runs `python -m zgm.probe` on the host of each usable group, through its transport. The probe reads the GPUs there, and their processes, each with its `ZGM_TASK_ID` if it has one. The group the executor runs in is read in-process. Results go into the table, so TUIs and `zgm submit` never reach other hosts themselves.
+- **GPU ids.** The first time a group's probe works, its GPUs get the lowest free zgm ids, which they keep while the group is usable. A multi-GPU task always gets GPUs of one host; placement windows (`a`, `best_gpus`) stay within a host, and the timeline labels each row with its host.
+- **Tasks on another host** start there: the transport runs `setsid python -m zgm.runtime.runner --remote ...` on the host. A runner on another host can't be watched through a lock or pids, so it writes a heartbeat into `run.json` every 5 seconds (none for 60 seconds = gone), and stops the task itself when `<id>.cancel` appears. All of this goes through the state dir, which every host must see. The task gets `CUDA_VISIBLE_DEVICES` in that host's numbering, and none of the variables the backend says describe where zgm runs.
+- **Groups that go away.** Work queued on their GPUs goes back to the waiting queue; runs still there end as failed once their heartbeat stops; then the ids are free for the next group.
+
+### Before you turn it on: `zgm check`
+
+`zgm check --cluster slurm` (or `zgm check --host HOST`) tests what cluster mode needs, host by host, and says how to fix what fails:
+
+- **reach**: the host accepts a login without a password or a prompt. For ssh that usually means your public key in `~/.ssh/authorized_keys` on the host (with a shared home, the same file), and maybe options in `ZGM_SSH_OPTIONS` (a key file, a jump host).
+- **shared**: the host sees the state dir at the same path. zgm writes a file there and reads the host's answer back.
+- **zgm**: `python -m zgm.probe` runs on the host with the same Python path, and sees GPUs. Install zgm somewhere every host shares, e.g. a venv in a shared home.
+- **state dir**: it is yours and not writable by others. On storage several users share, use a directory named after you: `export ZGM_HOME=/shared/projects/$USER/zgm`.
+
+### The Slurm backend
+
+A group is one of your running, single-node Slurm jobs with GPUs; pending jobs are listed with Slurm's expected start and the reason they wait. Slurm clusters let users ssh to the nodes where they have a job through pam_slurm_adopt, which puts the ssh session into that job: the probe sees exactly the job's GPUs, numbered from 0, and a task started there lives as long as that job, even after the job zgm runs in has ended. Not used, with a note: jobs on several nodes, and jobs on a node where you have another running job (ssh would land in the newest of them, whose GPUs may be other ones).
+
+Limits: logs from another host reach `zgm logs -f` with the shared filesystem's delay (NFS: a few seconds).
+
 ## Code layout
 
 ```
@@ -141,6 +175,9 @@ services/launcher.py   LaunchSpec -> process: cwd, interpreter, conda env, CUDA_
 services/executor.py   start / follow / stop runs: shared by the daemon and the TUI
 services/lease.py      one executor per database (OS file lock)
 services/gpu_usage.py  GPUs used by other programs (NVML compute processes minus zgm's)
+cluster/               cluster mode: base (Backend, Group) · core (ClusterWatch, ClusterProvider)
+                       · transport (local, ssh) · slurm (a backend) · check (zgm check)
+probe.py               python -m zgm.probe: a host's GPUs and processes, as JSON
 daemon.py              zgm daemon start|status|stop|run
 runtime/               Runtime protocol · LocalRuntime (+ runner.py) · MockRuntime · RayRuntime
 storage/sqlite.py      tasks · assignments · history · settings

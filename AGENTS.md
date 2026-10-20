@@ -6,8 +6,8 @@ zgm queues jobs on the GPUs of **one machine**. It starts each job on the GPUs i
 
 ## Rules
 
-1. **Never run bare `zgm` (or `python -m zgm`) without a subcommand.** That opens a full-screen interactive TUI that waits for keyboard input. Use the subcommands: `zgm submit`, `zgm list`, `zgm logs`, `zgm stop`, `zgm daemon`.
-2. **Use the same `--db` in every command**, or leave it out everywhere. The default is `~/.local/share/zgm/state.db`. Two databases are two separate queues that know nothing about each other.
+1. **Never run bare `zgm` (or `python -m zgm`) without a subcommand.** That opens a full-screen interactive TUI that waits for keyboard input. Use the subcommands: `zgm submit`, `zgm list`, `zgm logs`, `zgm stop`, `zgm daemon`, `zgm check`.
+2. **Use the same `--db` in every command**, or leave it out everywhere. The default is `$ZGM_HOME/state.db`, and `ZGM_HOME` defaults to `~/.local/share/zgm`. Two databases are two separate queues that know nothing about each other.
 3. **Pass `--python ABSOLUTE_PATH` or `--conda ENV` on every `zgm submit`.** Without them, zgm uses the environment the command runs in: an activated venv, else an activated conda env, else `python` on PATH, else zgm's own Python. An agent's shell rarely has the right one activated.
 4. **Use absolute paths** for `--python`, `-C` and `--config`. A relative `--python` is resolved against the task's working directory (`-C`), not the current directory.
 5. **Put `--` between zgm's options and the job's command line**: `zgm submit -g 2 -- train.py --lr 3e-4`.
@@ -136,7 +136,7 @@ See [Stop or remove a task](#stop-or-remove-a-task). Exit codes: 0 done, 1 nothi
 
 | command | prints | exit |
 |---|---|---|
-| `start [--runtime local\|ray\|mock] [--no-autostart] [--log-dir DIR]` | `started: ...` / `already running: ...` / `started (pid N); it takes over when a zgm TUI ... exits` | 0; 1 if it didn't come up (see `daemon.log`) |
+| `start [--runtime local\|ray\|mock] [--no-autostart] [--cluster slurm\|none] [--log-dir DIR]` | `started: ...` / `already running: ...` / `started (pid N); it takes over when a zgm TUI ... exits` | 0; 1 if it didn't come up (see `daemon.log`) |
 | `status` | queue, executor, `gpus:`, `auto-start:`, running jobs (with log paths), queued count, GPUs used by other programs | 0 |
 | `stop` | `stopped (pid N); running tasks keep running` / `not running` | 0; 1 if a TUI (not a daemon) runs the queue, or the daemon didn't exit |
 | `run` | the daemon in the foreground, logging to stdout | 0 on Ctrl+C / SIGTERM |
@@ -162,6 +162,36 @@ daemon log: /home/me/.local/share/zgm/daemon.log
 .venv/bin/python -c "import sys; from zgm.storage.sqlite import SqliteStorage; SqliteStorage(sys.argv[1]).set_setting('autostart', '1')" ~/.local/share/zgm/state.db
 ```
 
+## Several hosts (cluster mode)
+
+One zgm queue can span several machines. A **backend** says which groups of GPUs exist (today: `slurm`, every running Slurm job of the user); zgm does the rest the same way for every backend. Off by default; it is a setting of the database:
+
+```bash
+zgm check --cluster slurm            # 1. must end with "result: ready" (see below)
+zgm daemon start --cluster slurm     # 2. stays set for this database; --cluster none turns it off
+zgm daemon status                    # 3. the "cluster:" block lists the groups
+```
+
+Requirements, all checked by `zgm check` (exit 0 = ready, 1 = something failed; each `FAIL` line says how to fix it):
+
+| requirement | why | `zgm check` line |
+|---|---|---|
+| the state dir (`ZGM_HOME`) is on a filesystem every host mounts **at the same path** | runs on other hosts are followed through their files there | `shared` |
+| every host accepts a login **without a password or prompt** (ssh: a key in `~/.ssh/authorized_keys`; options in `ZGM_SSH_OPTIONS`) | zgm probes hosts and starts runners non-interactively | `reach` |
+| zgm runs on every host **with the same Python path** (e.g. a venv in a shared home) | the probe and the runner are `python -m zgm...` | `zgm` |
+| the state dir is yours and private; on shared storage, a path with your user name | other users must not read or change your queue and logs | `state dir` |
+
+Do not change ssh keys or permissions on the user's behalf without asking. `zgm check --host HOST` checks any host, with or without a backend.
+
+How it behaves:
+
+- The executor asks the backend for its groups (Slurm: `squeue` every 30 s) and probes each usable group's host every 10 s (`python -m zgm.probe` there). A group's GPUs appear as zgm GPU ids the first time its probe works (`daemon.log`: `node07 (Slurm job 1001): 4 x H100 80GB HBM3 added as GPU 1-4`), and keep those ids while it is usable.
+- A task's GPUs are always on one host; `--gpu-ids` takes zgm's ids. A task on another host is started there and followed through the shared state dir. Its `CUDA_VISIBLE_DEVICES` is in that host's numbering, and it gets none of the variables that describe where zgm runs (Slurm: `SLURM_*`).
+- When a group goes away, the work queued on its GPUs goes back to the waiting list (`pending`), and runs still there end as `failed`.
+- A task that needs more GPUs than any usable host has is rejected (exit 2). `--hold` keeps it in the waiting list, to place later.
+
+Slurm specifics: a group is a running single-node job with GPUs; ssh to its node lands in that job (pam_slurm_adopt, which most clusters use to let users reach their nodes at all), so a task started there lives as long as that job, even after the daemon's own job ends. Not used, with a note: jobs on several nodes, and jobs on a node where the user has another running job.
+
 ## What the job's process gets
 
 - `CUDA_VISIBLE_DEVICES`: the GPUs it was queued on, so the job uses `cuda:0` … `cuda:N-1`. `CUDA_DEVICE_ORDER=PCI_BUS_ID`, so zgm's GPU numbers are `nvidia-smi`'s.
@@ -180,7 +210,7 @@ Exit code 0 counts as success. Only successful runs feed the duration estimates.
 
 ## Files and locations
 
-Everything lives next to the database (default directory `~/.local/share/zgm/`):
+Everything lives next to the database, in the state dir: `$ZGM_HOME`, default `~/.local/share/zgm/`. zgm creates it private (mode 700). On storage several users share, give each user a directory of their own, e.g. `export ZGM_HOME=/shared/projects/$USER/zgm`; `zgm check` warns about a shared path that doesn't name the user.
 
 | path | contents |
 |---|---|
@@ -195,6 +225,8 @@ Everything lives next to the database (default directory `~/.local/share/zgm/`):
 
 | variable | effect |
 |---|---|
+| `ZGM_HOME` | the state dir: database, logs, daemon log (default `~/.local/share/zgm`) |
+| `ZGM_SSH_OPTIONS` | extra `ssh` options for cluster mode, e.g. `-i ~/.ssh/cluster_key -o ProxyJump=gateway` |
 | `ZGM_MOCK_GPUS=N` | use N fake GPUs instead of NVML (testing only) |
 | `ZGM_MOCK_EXTERNAL="1:9000,2:500:4321"` | with mock GPUs: pretend other programs use GPU 1 (9000 MiB) and GPU 2 (pid 4321, 500 MiB) |
 | `CONDA_EXE` | where conda is, if it is not on PATH or in `~/anaconda3`, `~/miniconda3`, `~/miniforge3` or `~/mambaforge` |
@@ -212,13 +244,16 @@ Everything lives next to the database (default directory `~/.local/share/zgm/`):
 | `failed` with `last_run` `null` | it could not start (e.g. the working dir was deleted after submit) | the reason is in `daemon.log` |
 | `failed`, log ends without `# zgm: exited` | lost: killed outside zgm or machine restarted | resubmit |
 | `zgm logs -f` exits 1 | the run failed or was stopped | `zgm list --json`: `exit_code`, `last_run` |
+| cluster mode: a group shows `probe failed: HOST: Permission denied` | no non-interactive login to that host | `zgm check --host HOST` says what to fix; ask before changing ssh keys |
+| cluster mode: `the runner did not start ... is .../logs shared with HOST?` | the host doesn't see the state dir | `zgm check --host HOST`; put `ZGM_HOME` on shared storage |
+| cluster mode: `gpus: no GPUs yet` | the daemon has not probed a group yet (a few seconds after start), or no daemon runs | wait, then `zgm daemon status` again; check `executor:` |
 | `zgm daemon stop` exits 1: `... runs the queue, not a daemon; close that TUI instead` | a person's TUI runs the queue | leave it; jobs still run, and submitted jobs still start. Ask before closing someone's TUI |
 
 ## Working on zgm's code
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev,ray]"
-.venv/bin/python -m pytest -q        # ~200 tests, ~1 min; Ray tests skip without [ray]
+.venv/bin/python -m pytest -q        # ~225 tests, ~1.5 min; Ray tests skip without [ray]
 ```
 
 Layout (`src/zgm/`):
@@ -233,6 +268,8 @@ Layout (`src/zgm/`):
 | `services/lease.py`, `filelock.py` | one executor per database |
 | `services/launcher.py` | `LaunchSpec` → argv/cwd/env (conda activation, `CUDA_VISIBLE_DEVICES`) |
 | `services/gpu_usage.py`, `gpu_discovery.py` | NVML/mock GPUs, and processes not started by zgm |
+| `cluster/` | cluster mode, optional: `base.py` (the `Backend` protocol and `Group`), `core.py` (backend-independent: `ClusterWatch`, `ClusterProvider`, `locate`), `transport.py` (local / ssh), `slurm.py` (the Slurm backend), `check.py` (`zgm check`) |
+| `probe.py` | `python -m zgm.probe`: a host's GPUs and processes, as JSON |
 | `runtime/local.py` + `runner.py` | detached runs and their files; `ray_adapter.py`, `mock.py` |
 | `storage/sqlite.py` | schema, with automatic migration when `TABLES` changes (bump `SCHEMA_VERSION`) |
 | `app.py`, `screens/`, `widgets/` | the Textual TUI |
@@ -244,4 +281,6 @@ Conventions:
 - Execution logic belongs in `services/executor.py`, not in the TUI. The UI never imports Ray.
 - State shared between processes goes in SQLite (other zgm processes notice through `PRAGMA data_version`), or in a run's files. Never only in memory.
 - Tests that start real processes must clean them up. Windows matters: venv `python.exe` is a launcher shim that starts the real interpreter as a child, so the pid you spawn is not the pid that runs, and a file can't be replaced while another process reads it.
-- No NVIDIA GPU is needed for tests: NVML is faked (`tests/test_gpu_usage.py`), and `--mock-gpus` / `ZGM_MOCK_GPUS` give fake devices.
+- No NVIDIA GPU is needed for tests: NVML is faked (`tests/test_gpu_usage.py`), and `--mock-gpus` / `ZGM_MOCK_GPUS` give fake devices. No cluster either: `tests/test_cluster.py` fakes a backend and a transport, and the remote-run tests put a fake `ssh` on PATH.
+- Nothing outside `cluster/<backend>.py` knows a backend. A new one (a list of PCs, another scheduler) is a class implementing `cluster.base.Backend`, one entry in `cluster.BACKENDS`, and tests like `tests/test_slurm_backend.py`; a new way to reach hosts is a class in `cluster/transport.py`; a new kind of GPU (not NVML) is a provider in `services/gpu_discovery.py`.
+- No site-specific names (hosts, job ids, paths, accounts) in code, docs or tests: use made-up ones like `node07` and job `1001`.

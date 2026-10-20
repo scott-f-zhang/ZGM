@@ -64,6 +64,11 @@ class NVMLProvider:
                     found[p.pid] = GPUProcess(p.pid, process_name(p.pid), mem)
         return list(found.values())
 
+    def sync(self, devices: list[GPUDevice]) -> bool:
+        """Refresh the readings; True if the set of GPUs changed (never, here)."""
+        self.refresh(devices)
+        return False
+
     def refresh(self, devices: list[GPUDevice]) -> None:
         nv = self._nvml
         for d in devices:
@@ -106,6 +111,10 @@ class MockGPUProvider:
             for i in range(self.count)
         ]
 
+    def sync(self, devices: list[GPUDevice]) -> bool:
+        self.refresh(devices)
+        return False
+
     def refresh(self, devices: list[GPUDevice]) -> None:
         for d in devices:
             d.utilization = max(0, min(100, d.utilization + self._rng.randint(-8, 8)))
@@ -134,6 +143,8 @@ def make_provider(mock_count: int | None = None) -> NVMLProvider | MockGPUProvid
 
 def describe_gpus(provider, gpus: list[GPUDevice]) -> str:
     """One line saying what the GPUs are, and whether they are real."""
+    if hasattr(provider, "describe"):  # cluster mode
+        return provider.describe(gpus)
     if isinstance(provider, MockGPUProvider):
         return (f"{len(gpus)} mock GPUs, not real devices (no NVIDIA driver/NVML found, "
                 "or --mock-gpus / ZGM_MOCK_GPUS set)")

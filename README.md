@@ -128,6 +128,7 @@ The dashboard's `n` key asks for the same things in a form.
 | `zgm logs NAME [-f]` | a job's output; `-f` follows it until it ends |
 | `zgm stop NAME` | stop a running job, or take a waiting one out of line |
 | `zgm daemon start` / `status` / `stop` | run the queue in the background / check on it / stop it (running jobs keep running) |
+| `zgm check` | check the setup: the state directory, the GPUs, and (with `--cluster` / `--host`) every other host |
 
 `zgm submit`, `zgm list` and `zgm stop` can print JSON with `--json`; see [AGENTS.md](AGENTS.md).
 
@@ -169,7 +170,8 @@ zgm --config-dir examples/configs --db demo.db --runtime local   # T on a config
 - **GPUs used by other programs.** zgm asks the NVIDIA driver which programs are computing on each GPU. If one isn't a zgm job, the GPU is marked in red on the timeline (`! other`) and nothing new starts there. Programs that only draw on screen (your desktop, a browser) don't count.
 - **Closing things.** Closing the dashboard or running `zgm daemon stop` doesn't stop your jobs. The next time zgm runs the queue, it picks them up and records how they ended.
 - **No NVIDIA GPU?** zgm then shows 4 pretend GPUs so you can try it out, and `zgm daemon status` says so. Jobs don't get real GPUs in that case.
-- **One queue per database.** The queue is kept in `~/.local/share/zgm/state.db`. Pass `--db` to every command to use another one.
+- **Several machines?** One queue can span several hosts; on a Slurm cluster, `zgm daemon start --cluster slurm` uses the GPUs of all your running jobs and adds a job's GPUs as soon as it starts. Run `zgm check --cluster slurm` first: it tests the shared directory and the login to each host. See [how it works](docs/how-it-works.md#several-hosts-cluster-mode).
+- **One queue per database.** The queue is kept in `~/.local/share/zgm/state.db` (or `$ZGM_HOME/state.db`). Pass `--db` to every command to use another one. On storage other users share, use a directory of your own, e.g. `ZGM_HOME=/shared/$USER/zgm`.
 - **Looks.** The dashboard uses your terminal's font and size. A modern terminal (Windows Terminal, iTerm2, kitty, ...) with a monospace font such as Cascadia Mono or JetBrains Mono, at least 100×30 characters, looks best.
 
 ## More

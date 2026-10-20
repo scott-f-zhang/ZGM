@@ -255,7 +255,7 @@ async def test_tui_without_runtime_plans_only(tmp_path, config_dir):
 def daemon_args(db: Path, **kw):
     base = dict(db=str(db), runtime="local", log_dir=None, mock_gpus=4, interval=0.2,
                 ray_address=None,
-                autostart=None)
+                autostart=None, cluster=None)
     return SimpleNamespace(**{**base, **kw})
 
 

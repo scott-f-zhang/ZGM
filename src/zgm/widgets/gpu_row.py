@@ -145,6 +145,7 @@ class GPURow(Widget):
         lines = [
             [(f"{'▶' if cursor_row else ' '}", base + Style(color=theme.TITLE, bold=True)),
              (f"gpu{g.id} ", base + Style(color=theme.TITLE, bold=True)),
+             *([(f"{g.host} ", text)] if g.host else []),
              (g.short_name, dim)],
             [(" mem ", dim),
              theme.meter(g.memory_fraction, METER_WIDTH, theme.TEMP, base),

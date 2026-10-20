@@ -1,4 +1,5 @@
-"""Schedule view: task queue (top), details (middle), GPU timeline (bottom)."""
+"""Schedule view: task queue (top), details (middle), GPU timeline (bottom), and
+in cluster mode the groups of GPUs (e.g. Slurm jobs) under it."""
 
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from ..services.scheduler import Result, Slot
 from ..widgets.dialogs import ChoiceScreen, apply_task_edit, edit_task_form, new_task_form
 from ..widgets.gpu_row import GPURow
 from ..widgets.gpu_timeline import GPUTimeline
+from ..widgets.cluster_panel import ClusterPanel
 from ..widgets.task_card import TaskCard
 from ..widgets.task_details import TaskDetails
 from ..widgets.task_queue import TaskQueue
@@ -85,10 +87,9 @@ class ScheduleScreen(Screen):
         details.border_title = box_title("details")
         yield details
         timeline = GPUTimeline(self.app.gpus, card_width=self.app.card_width, id="gpu-timeline")
-        timeline.border_title = box_title(
-            "timeline", info=f"{len(self.app.gpus)} gpu · {self.app.gpu_source}")
         timeline.border_subtitle = box_footer("history to scale ┃ now ┃ queue in order")
         yield timeline
+        yield ClusterPanel(id="cluster-panel")
         yield Static("", id="status-line")
         yield Footer()
 
@@ -103,8 +104,29 @@ class ScheduleScreen(Screen):
 
     def on_mount(self) -> None:
         self.store.subscribe(self.refresh_all)
+        self.retitle_timeline()
         self.refresh_all()
+        self.refresh_cluster()
         self.queue.focus()
+
+    def retitle_timeline(self) -> None:
+        n = len(self.app.gpus)
+        self.timeline.border_title = box_title(
+            "timeline", info=f"{n} gpu{'s' if n != 1 else ''} · {self.app.gpu_source}")
+
+    def gpus_changed(self) -> None:
+        """Cluster mode: a group's GPUs came or went."""
+        if not self.is_mounted:
+            return
+        self.timeline.set_gpus(self.app.gpus)
+        self.retitle_timeline()
+        self.refresh_all()
+
+    def refresh_cluster(self) -> None:
+        cluster = self.app.cluster
+        panels = self.query(ClusterPanel)
+        if cluster is not None and panels:
+            panels.first().show(cluster)
 
     def on_unmount(self) -> None:
         self.store.unsubscribe(self.refresh_all)

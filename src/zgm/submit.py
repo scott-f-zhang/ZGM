@@ -26,7 +26,7 @@ from .commands import task_record
 from .models import LaunchSpec, Task, format_estimate
 from .services import launcher
 from .services.config_repo import DEFAULT_COMMAND_TEMPLATE, ConfigRepository
-from .services.gpu_discovery import make_provider
+from .cluster.core import ClusterProvider, gpu_source
 from .services.gpu_usage import GPUWatch, describe as describe_procs
 from .services.lease import ExecutorLease, describe
 from .services.scheduler import AssignmentService
@@ -225,9 +225,11 @@ def submit_result(args: argparse.Namespace) -> tuple[str, dict]:
         check(task)
 
     store = TaskStore(SqliteStorage(Path(args.db).expanduser()))
-    provider = make_provider(args.mock_gpus)
+    provider = gpu_source(store.storage, args.mock_gpus)
     devices = provider.discover()
-    svc = AssignmentService(store, [g.id for g in devices])
+    cluster = isinstance(provider, ClusterProvider)
+    svc = AssignmentService(store, [g.id for g in devices],
+                            node_of=provider.node_of(devices) if cluster else None)
     svc.blocked, _ = GPUWatch(provider, devices).refresh(store)  # best_gpus avoids them
     store.add_task(task)
     lines = [f'Queued "{task.name}" (task {task.id})',
@@ -251,7 +253,13 @@ def submit_result(args: argparse.Namespace) -> tuple[str, dict]:
             store.remove_task(task.id)
             raise SubmitError(f"--gpu-ids takes numbers like 0,1, got {args.gpu_ids!r}") from None
     else:
-        gpus = svc.best_gpus(task)
+        try:
+            gpus = svc.best_gpus(task)
+        except ValueError as e:
+            store.remove_task(task.id)
+            hint = ("; --hold puts it in the waiting queue, to place once a host "
+                    "with enough GPUs is up" if cluster else "")
+            raise SubmitError(f"task needs {task.required_gpus} GPU(s): {e}{hint}") from None
     res = svc.assign(task.id, gpus, 0 if args.first else None)
     if not res.ok:
         store.remove_task(task.id)
@@ -265,7 +273,9 @@ def submit_result(args: argparse.Namespace) -> tuple[str, dict]:
     else:
         when = f"starts ~{a.planned_start:%H:%M}"
     estimate = format_estimate(store.tasks[task.id], long=True)
-    lines.append(f"  GPU   {','.join(map(str, a.gpu_ids))}, queue #{position}, {when}")
+    host = next((g.host for g in devices if g.id in a.gpu_ids and g.host), None)
+    lines.append(f"  GPU   {','.join(map(str, a.gpu_ids))}{f' on {host}' if host else ''}, "
+                 f"queue #{position}, {when}")
     lines.append(f"  est.  {estimate}")
     for g in devices:
         if g.id in a.gpu_ids and g.external:

@@ -1,8 +1,9 @@
 """Command-line entry point: ``zgm`` or ``python -m zgm``.
 
 ``zgm [options]`` opens the TUI. Without it: ``zgm submit`` queues a task,
-``zgm list`` / ``zgm logs`` / ``zgm stop`` show and control tasks, and
-``zgm daemon start|status|stop`` runs the queue in the background (see ``-h`` of each).
+``zgm list`` / ``zgm logs`` / ``zgm stop`` show and control tasks,
+``zgm daemon start|status|stop`` runs the queue in the background, and
+``zgm check`` checks the setup, other hosts included (see ``-h`` of each).
 """
 
 from __future__ import annotations
@@ -55,6 +56,10 @@ def main(argv: list[str] | None = None) -> None:
         from .daemon import main as daemon_main
 
         raise SystemExit(daemon_main(argv[1:]))
+    if argv[:1] == ["check"]:
+        from .cluster.check import main as check_main
+
+        raise SystemExit(check_main(argv[1:]))
     if argv[:1] and argv[0] in ("list", "stop", "logs"):
         from .commands import main as command_main
 

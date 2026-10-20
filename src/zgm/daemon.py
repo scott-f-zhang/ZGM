@@ -10,6 +10,10 @@ records how they end. TUIs and ``zgm submit`` on the same database are its
 clients; p/r/s in a TUI reach it through the database. Tasks run detached, so
 stopping or restarting the daemon (or the machine's zgm, or a TUI) doesn't stop
 them: whoever runs the queue next picks them up.
+
+``--cluster NAME`` makes this database's queue span several hosts (see
+cluster/): with ``slurm``, the GPUs of all of your running Slurm jobs are
+zgm's GPUs. The daemon keeps track of them. ``--cluster none`` turns it off.
 """
 
 from __future__ import annotations
@@ -27,10 +31,12 @@ from pathlib import Path
 from .models import AssignmentState
 from .services.executor import Executor
 from .services.filelock import is_locked
-from .services.gpu_discovery import describe_gpus, make_provider
+from .services.gpu_discovery import describe_gpus
 from .services.gpu_usage import GPUWatch, describe as describe_procs
 from .services.lease import ExecutorLease, describe
 from .services.scheduler import AssignmentService
+from .cluster import BACKENDS
+from .cluster.core import ClusterProvider, ClusterWatch, gpu_source
 from .services.task_store import TaskStore
 from .storage.sqlite import SqliteStorage, default_db_path
 
@@ -59,6 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="how often to check runs and the queue (default: %(default)s)")
         sp.add_argument("--no-autostart", dest="autostart", action="store_const", const=False,
                         default=None, help="pause auto-start (p in a TUI turns it on)")
+        sp.add_argument("--cluster", choices=[*BACKENDS, "none"], default=None,
+                        help="span several hosts: 'slurm' = the GPUs of all your running "
+                             "Slurm jobs; 'none' = this machine only (stays set for "
+                             "this database; run 'zgm check' first)")
 
     runner_options(sub.add_parser("start", help="start the daemon in the background"))
     runner_options(sub.add_parser("run", help="run the daemon in the foreground"))
@@ -83,15 +93,22 @@ def daemon_log(db: Path) -> Path:
 def run(args) -> int:
     db = _db(args)
     store = TaskStore(SqliteStorage(db))
-    provider = make_provider(args.mock_gpus)
+    if args.cluster is not None:
+        store.storage.set_setting("cluster", "" if args.cluster == "none" else args.cluster)
+    provider = gpu_source(store.storage, args.mock_gpus)
+    cluster = provider if isinstance(provider, ClusterProvider) else None
+    if cluster and args.runtime != "local":
+        print(f"zgm daemon: error: cluster mode needs the local runtime, not {args.runtime}",
+              file=sys.stderr)
+        return 2
     gpus = provider.discover()
-    gpu_ids = [g.id for g in gpus]
-    svc = AssignmentService(store, gpu_ids)
+    svc = AssignmentService(store, [g.id for g in gpus],
+                            node_of=cluster.node_of(gpus) if cluster else None)
     watch = GPUWatch(provider, gpus)
     if args.runtime == "local":
         from .runtime.local import LocalRuntime
 
-        runtime = LocalRuntime(_log_dir(args))
+        runtime = LocalRuntime(_log_dir(args), locate=cluster.locate if cluster else None)
     elif args.runtime == "ray":
         from .runtime.ray_adapter import RayRuntime
 
@@ -121,10 +138,25 @@ def run(args) -> int:
         while not lease.acquire("daemon", runtime.name, log_dir):
             if stop.wait(args.interval):
                 return 0
+    groups = ClusterWatch(store, cluster.backend, cluster.local) if cluster else None
+
+    def follow_cluster(wait: bool = False) -> None:
+        """Cluster mode: update the groups, then the GPUs if they came or went."""
+        if groups is None:
+            return
+        for message, severity in groups.refresh(svc, wait=wait):
+            log(message, severity)
+        cluster.invalidate()
+        if provider.sync(gpus):
+            svc.set_gpus([g.id for g in gpus], cluster.node_of(gpus))
+            svc.recompute()
+            log(f"GPUs now: {describe_gpus(provider, gpus)}")
+
     try:
         executor = Executor(store, svc, runtime, notify=log)
         if args.autostart is not None:
             executor.autostart = args.autostart
+        follow_cluster(wait=True)
         log(f"zgm daemon (pid {os.getpid()}) runs the queue in {db}: "
             f"{describe_gpus(provider, gpus)}, "
             f"{runtime.name} runtime, auto-start {'on' if executor.autostart else 'paused'}")
@@ -133,12 +165,15 @@ def run(args) -> int:
             log(f"following {len(executor.runs)} task(s) already running")
         while not stop.is_set():
             store.sync()
+            follow_cluster()
             svc.blocked, changes = watch.refresh(store)
             for message in changes:
                 log(message, "warning")
             executor.tick()
             stop.wait(args.interval)
     finally:
+        if groups is not None:
+            groups.close()
         lease.release()
         log("stopped; running tasks keep running")
     return 0
@@ -162,6 +197,8 @@ def start(args) -> int:
         argv += ["--ray-address", args.ray_address]
     if args.autostart is False:
         argv.append("--no-autostart")
+    if args.cluster is not None:
+        argv += ["--cluster", args.cluster]
     from .runtime.local import spawn_detached
 
     db.parent.mkdir(parents=True, exist_ok=True)
@@ -222,12 +259,23 @@ def status(args) -> int:
     print(f"queue:      {db}")
     print(f"executor:   {describe(holder)}" + (f" since {holder.get('since')}"
                                                if holder and holder.get("since") else ""))
-    provider = make_provider(getattr(args, "mock_gpus", None))
-    gpus = provider.discover()
-    print(f"gpus:       {describe_gpus(provider, gpus)}")
     if not db.exists():
+        from .services.gpu_discovery import make_provider
+
+        provider = make_provider(getattr(args, "mock_gpus", None))
+        print(f"gpus:       {describe_gpus(provider, provider.discover())}")
         return 0
     store = TaskStore(SqliteStorage(db))
+    provider = gpu_source(store.storage, getattr(args, "mock_gpus", None))
+    gpus = provider.discover()
+    print(f"gpus:       {describe_gpus(provider, gpus)}")
+    if isinstance(provider, ClusterProvider):
+        seen = provider.seen_at()
+        print(f"cluster:    {provider.backend.name}"
+              + (f" (as of {datetime.fromisoformat(seen):%H:%M:%S})"
+                 if seen else " (nothing seen yet: does a daemon run?)"))
+        for line in provider.lines(indent="  "):
+            print(line)
     autostart = store.storage.get_setting("autostart", "1") == "1"
     print(f"auto-start: {'on' if autostart else 'paused'}")
     running = [a for a in store.assignments.values() if a.state == AssignmentState.RUNNING]

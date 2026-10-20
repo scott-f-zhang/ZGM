@@ -9,6 +9,9 @@ those (torchrun workers, data loader processes, ...), or carries the
 ``ZGM_TASK_ID`` of a running task in its environment (which also catches
 processes whose parent has exited). Everything else on a GPU is external, and
 the scheduler doesn't start new work there until it is gone.
+
+On another host (cluster mode) only the second test applies: ``zgm.probe`` reads
+each process's ``ZGM_TASK_ID`` there and reports it with the process.
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ def zgm_pids(store: TaskStore) -> set[int]:
         if a.state != AssignmentState.RUNNING or not a.log_path:
             continue
         info = read_run(Path(a.log_path).with_suffix("")) or {}
+        if info.get("remote"):
+            continue  # its pids are another machine's
         roots.update(p for p in (info.get("runner_pid"), info.get("child_pid")) if p)
     pids = set(roots)
     for pid in roots:
@@ -57,8 +62,12 @@ def process_name(pid: int) -> str:
 
 def external(processes: Iterable[GPUProcess], own_pids: set[int],
              running_tasks: set[str]) -> list[GPUProcess]:
-    return [p for p in processes
-            if p.pid not in own_pids and _task_of(p.pid) not in running_tasks]
+    def ours(p: GPUProcess) -> bool:
+        if p.host is not None:  # on another node: probed there
+            return p.zgm_task in running_tasks
+        return p.pid in own_pids or _task_of(p.pid) in running_tasks
+
+    return [p for p in processes if not ours(p)]
 
 
 class GPUWatch:

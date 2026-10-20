@@ -12,6 +12,10 @@ Environments:
 The process also gets ``CUDA_VISIBLE_DEVICES`` for the planned GPUs (so the
 user's code just uses ``cuda:0..n-1``), ``ZGM_NUM_GPUS``, ``ZGM_GPU_IDS``,
 ``ZGM_TASK_ID``, ``ZGM_TASK_NAME`` and ``PYTHONUNBUFFERED=1``.
+
+A task on another host (cluster mode) gets ``CUDA_VISIBLE_DEVICES`` in that
+host's numbering, and none of the variables that describe where zgm runs (the
+backend names them, e.g. ``SLURM_*``) or ``HOSTNAME``.
 """
 
 from __future__ import annotations
@@ -145,10 +149,14 @@ def write_config_snapshot(config_path: str | Path, dest: Path) -> Path:
 
 
 def build_process(task: Task, gpu_ids: Sequence[int] | None,
-                  snapshot: Path | None = None) -> Process:
+                  snapshot: Path | None = None,
+                  visible: Sequence[int] | None = None,
+                  drop_env: Sequence[str] | None = None) -> Process:
     """``gpu_ids=None`` leaves CUDA_VISIBLE_DEVICES alone (Ray sets it itself).
     ``snapshot``: where to write the resolved config if the task uses ``{config}``
-    (default: a temporary file)."""
+    (default: a temporary file). ``visible``: the GPUs' indices on their host,
+    for CUDA_VISIBLE_DEVICES (``ZGM_GPU_IDS`` keeps zgm's ids). ``drop_env``: the
+    task runs on another host; leave out variables with these prefixes."""
     spec = task.launch
     values = {"path": task.config_path or "", "name": task.name,
               "num_gpus": task.required_gpus}
@@ -185,6 +193,12 @@ def build_process(task: Task, gpu_ids: Sequence[int] | None,
     if gpu_ids is not None:
         ids = ",".join(str(g) for g in gpu_ids)
         env["CUDA_VISIBLE_DEVICES"] = env["ZGM_GPU_IDS"] = ids
+    if visible is not None:
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in visible)
+    if drop_env is not None:
+        prefixes = tuple(drop_env)
+        for key in [k for k in env if k == "HOSTNAME" or (prefixes and k.startswith(prefixes))]:
+            del env[key]
 
     if spec.command:
         return Process(fill(spec.command, values), str(cwd), env)

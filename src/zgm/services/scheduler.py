@@ -65,7 +65,8 @@ class ConflictValidator:
         ]
 
     def validate_shape(
-        self, task: Task, gpu_ids: Sequence[int], known_gpus: Iterable[int] | None
+        self, task: Task, gpu_ids: Sequence[int], known_gpus: Iterable[int] | None,
+        node_of: dict[int, str] | None = None,
     ) -> str | None:
         if len(set(gpu_ids)) != len(gpu_ids):
             return "duplicate GPU ids"
@@ -76,6 +77,8 @@ class ConflictValidator:
             missing = [g for g in gpu_ids if g not in known]
             if missing:
                 return f"unknown GPU id(s): {missing}"
+        if node_of and len({node_of.get(g) for g in gpu_ids}) > 1:
+            return "a task's GPUs must be on one node"
         return None
 
 
@@ -85,13 +88,31 @@ class AssignmentService:
         store: TaskStore,
         gpu_ids: Iterable[int] | None,
         validator: ConflictValidator | None = None,
+        node_of: dict[int, str] | None = None,
     ) -> None:
         self.store = store
-        self.gpu_ids = sorted(gpu_ids) if gpu_ids is not None else None
         self.validator = validator or ConflictValidator()
+        self.set_gpus(gpu_ids, node_of)
         # GPUs other programs use (see GPUWatch): nothing starts there, and when
         # they will be free is unknown
         self.blocked: set[int] = set()
+
+    def set_gpus(self, gpu_ids: Iterable[int] | None,
+                 node_of: dict[int, str] | None = None) -> None:
+        """The GPUs work may go on. In cluster mode they come and go with their
+        hosts, and ``node_of`` says which host each is on: a task's GPUs share one."""
+        self.gpu_ids = sorted(gpu_ids) if gpu_ids is not None else None
+        self.node_of = dict(node_of or {})
+
+    def unavailable(self) -> set[int]:
+        """GPUs nothing may start on: used by other programs, or not (any more)
+        among the GPUs, e.g. their host went away."""
+        gone = set()
+        if self.gpu_ids is not None:
+            known = set(self.gpu_ids)
+            gone = {g for a in self.store.assignments.values() if a.is_active
+                    for g in a.gpu_ids if g not in known}
+        return self.blocked | gone
 
     # queue views -----------------------------------------------------------
     def planned(self) -> list[Assignment]:
@@ -116,7 +137,7 @@ class AssignmentService:
         none of its GPUs runs anything and no assignment queued before it waits
         for any of them. Assignments returned together never share a GPU.
         """
-        claimed = self.busy_gpus() | self.blocked
+        claimed = self.busy_gpus() | self.unavailable()
         ready = []
         for a in self.planned():
             gpus = set(a.gpu_ids)
@@ -140,7 +161,7 @@ class AssignmentService:
         estimate; everything queued behind it on that GPU is then unknown too.
         """
         now = (now or datetime.now()).replace(second=0, microsecond=0)
-        free_at: dict[int, datetime | None] = {g: None for g in self.blocked}
+        free_at: dict[int, datetime | None] = {g: None for g in self.unavailable()}
         slots: list[Slot] = []
 
         def ready(gpus) -> datetime | None:
@@ -214,15 +235,19 @@ class AssignmentService:
             a = self.store.assignments.get(assignment_id)
             if a is None or a.state != AssignmentState.PLANNED:
                 return Result(False, error="only planned assignments can be moved")
-        err = self.validator.validate_shape(task, list(gpu_ids), self.gpu_ids)
+        err = self.validator.validate_shape(task, list(gpu_ids), self.gpu_ids, self.node_of)
         if err:
             return Result(False, error=err)
         return Result(True)
 
     def suggest_gpus(self, task: Task, anchor_gpu: int) -> tuple[int, ...]:
-        """Contiguous window of ``required_gpus`` starting at the anchor (clamped)."""
+        """Contiguous window of ``required_gpus`` starting at the anchor (clamped),
+        on the anchor's node."""
         all_ids = self.gpu_ids if self.gpu_ids is not None else list(
             range(anchor_gpu + task.required_gpus))
+        if self.node_of and anchor_gpu in self.node_of:
+            node = self.node_of[anchor_gpu]
+            all_ids = [g for g in all_ids if self.node_of.get(g) == node]
         n = task.required_gpus
         if n >= len(all_ids):  # too many GPUs requested: check() reports it
             return tuple(all_ids)
@@ -236,7 +261,10 @@ class AssignmentService:
         the GPUs with the least queued and running work win, then the lowest ids."""
         if not self.gpu_ids:
             raise ValueError("no GPUs")
-        windows = {self.suggest_gpus(task, g) for g in self.gpu_ids}
+        windows = {w for w in (self.suggest_gpus(task, g) for g in self.gpu_ids)
+                   if len(w) == task.required_gpus}
+        if not windows:
+            raise ValueError(f"no node has {task.required_gpus} GPU(s)")
         load: dict[int, int] = {}
         for a in [*self.running(), *self.planned()]:
             for g in a.display_gpu_ids:
