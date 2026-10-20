@@ -24,6 +24,36 @@ FAILED_COLOR = theme.USED[0]  # dark red
 STOPPED_COLOR = theme.AVAILABLE[0]  # dark amber
 
 
+def pack_columns(gpu_sets: list[tuple[int, ...]]) -> list[int]:
+    """A column for each item: the first one where it shares no GPU with an item
+    already there. Running work never shares a GPU, so it all lines up in column 0."""
+    used: list[set[int]] = []
+    cols = []
+    for gpus in gpu_sets:
+        col = next((i for i, u in enumerate(used) if not u & set(gpus)), len(used))
+        if col == len(used):
+            used.append(set())
+        used[col] |= set(gpus)
+        cols.append(col)
+    return cols
+
+
+def slot_columns(slots: list[Slot]) -> tuple[list[int], int]:
+    """The column of each slot, and how many columns running work takes: running
+    work shares columns (see pack_columns), queued work follows, one column each."""
+    running = [s.gpu_ids for s in slots if s.kind == "running"]
+    run_cols = pack_columns(running)
+    n_run = max(run_cols, default=-1) + 1
+    cols, it, queued = [], iter(run_cols), 0
+    for s in slots:
+        if s.kind == "running":
+            cols.append(next(it))
+        else:
+            cols.append(n_run + queued)
+            queued += 1
+    return cols, n_run
+
+
 def card_lines(task: Task | None, slot: Slot, width: int, now: datetime,
                note: str | None = None) -> list[str]:
     """Full task name (wrapped, centred) + GPUs for multi-GPU work.
@@ -124,7 +154,8 @@ class GPUTimeline(Vertical, can_focus=True):
         self.state = TimelineState(card_width=card_width)
         self.axis = TimeAxis(self.state, id="time-axis")
         self.rows = [GPURow(g, self.state) for g in gpus]
-        self.slots: list[Slot] = []  # displayed future columns, in order
+        self.slots: list[Slot] = []  # the future zone's items, in order
+        self.cols: list[int] = []  # the column of each (running work shares columns)
         self.show_end_slot = False
 
     def compose(self):
@@ -158,7 +189,8 @@ class GPUTimeline(Vertical, can_focus=True):
 
     @property
     def n_items(self) -> int:
-        return len(self.slots)
+        """Columns in the future zone (the cursor can also sit one past them)."""
+        return max(self.cols, default=-1) + 1
 
     # data ------------------------------------------------------------------
     def update_data(
@@ -176,11 +208,13 @@ class GPUTimeline(Vertical, can_focus=True):
         st = self.state
         st.now = now
         self.slots = slots
-        st.cursor_col = min(st.cursor_col, len(slots))
+        self.cols, _ = slot_columns(slots)
+        st.cursor_col = min(st.cursor_col, self.n_items)
+        st.clamp_scroll(self.n_items)
         w = st.card_width
 
         cards = []
-        for col, slot in enumerate(slots):
+        for col, slot in zip(self.cols, slots):
             task = tasks.get(slot.task_id)
             if slot.kind == "ghost":
                 bg = GHOST_OK if ghost_ok else GHOST_BAD
@@ -215,9 +249,9 @@ class GPUTimeline(Vertical, can_focus=True):
             past.append(PastBlock(a.id, span[0], span[1], task.name if task else a.task_id,
                                   bg, fg, a.display_gpu_ids))
 
-        self.axis.columns = dict(enumerate(slots))
+        self.axis.columns = dict(zip(self.cols, slots))
         self.axis.refresh()
-        end_col = len(slots) if show_cursor and st.cursor_col == len(slots) else None
+        end_col = self.n_items if show_cursor and st.cursor_col == self.n_items else None
         ids = [r.gpu.id for r in self.rows]
         for i, row in enumerate(self.rows):
             row.set_data(
@@ -229,8 +263,12 @@ class GPUTimeline(Vertical, can_focus=True):
             )
 
     def slot_under_cursor(self) -> Slot | None:
-        c = self.state.cursor_col
-        return self.slots[c] if 0 <= c < len(self.slots) else None
+        """The slot in the cursor's column; in a column of running work, the one
+        on the cursor's GPU."""
+        st = self.state
+        here = [s for s, c in zip(self.slots, self.cols) if c == st.cursor_col]
+        return next((s for s in here if st.cursor_gpu in s.gpu_ids),
+                    here[0] if len(here) == 1 else None)
 
     def locate(self, screen_x: int, screen_y: int) -> tuple[int, Hit] | None:
         """Screen coordinates -> (gpu id, hit in the strip), or None outside the rows."""

@@ -78,7 +78,7 @@ The schedule page has three parts:
 
 - **queue**, at the top: jobs that are waiting to be given GPUs. New jobs land here when you add them without GPUs, and so do stopped or failed jobs.
 - **details**, in the middle: everything about the selected job.
-- **timeline**, at the bottom: one row per GPU, with its memory and load on the left. Left of the red line is history, drawn to scale. Right of it are the running jobs, then the queue in the order the jobs will start (`#1` is next). A job using several GPUs spans several rows.
+- **timeline**, at the bottom: one row per GPU, with its memory and load on the left. Left of the red line is history, drawn to scale. Right of it are the running jobs, side by side in one column, then the queue in the order the jobs will start (`#1` is next). A job using several GPUs spans several rows.
 
 To give a job GPUs, select it in the queue and press `a`. A preview shows where it would go. Move it with the arrow keys and press `Enter`, or drag the card with the mouse.
 

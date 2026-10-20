@@ -19,7 +19,7 @@ from ..widgets.theme import badge, box_footer, box_title, hints
 from ..services.scheduler import Result, Slot
 from ..widgets.dialogs import ChoiceScreen, apply_task_edit, edit_task_form, new_task_form
 from ..widgets.gpu_row import GPURow
-from ..widgets.gpu_timeline import GPUTimeline
+from ..widgets.gpu_timeline import GPUTimeline, pack_columns
 from ..widgets.cluster_panel import ClusterPanel
 from ..widgets.task_card import TaskCard
 from ..widgets.task_details import TaskDetails
@@ -142,8 +142,9 @@ class ScheduleScreen(Screen):
         self.refresh_details()
 
     @property
-    def n_running(self) -> int:
-        return len(self.svc.running())
+    def run_cols(self) -> int:
+        """Columns of running work on the timeline: queued work starts after them."""
+        return max(pack_columns([a.display_gpu_ids for a in self.svc.running()]), default=-1) + 1
 
     def refresh_timeline(self) -> None:
         now = datetime.now()
@@ -239,7 +240,7 @@ class ScheduleScreen(Screen):
         if task is None:
             return None
         st = self.timeline.state
-        n_run = self.n_running
+        n_run = self.run_cols
         pos = max(0, min(self._base_len(), st.cursor_col - n_run))
         st.cursor_col = n_run + pos
         gpus = self.svc.suggest_gpus(task, st.cursor_gpu)
@@ -267,15 +268,15 @@ class ScheduleScreen(Screen):
         planned = self.svc.planned()
         if via_mouse:
             # park the ghost at the end so it doesn't shift the columns under the pointer
-            st.cursor_col = self.n_running + len(planned)
+            st.cursor_col = self.run_cols + len(planned)
         else:
             if assignment_id:
                 a = self.store.assignments[assignment_id]
                 st.cursor_gpu = a.gpu_ids[0]
                 idx = next(i for i, x in enumerate(planned) if x.id == assignment_id)
-                st.set_cursor_col(self.n_running + idx, self.n_running + len(planned))
+                st.set_cursor_col(self.run_cols + idx, self.run_cols + len(planned))
             else:
-                st.set_cursor_col(self.n_running + len(planned), self.n_running + len(planned))
+                st.set_cursor_col(self.run_cols + len(planned), self.run_cols + len(planned))
             self.timeline.focus()
         self.refresh_timeline()
         self.refresh_details()
@@ -374,7 +375,7 @@ class ScheduleScreen(Screen):
         if res.ok:
             st = self.timeline.state
             idx = next(i for i, a in enumerate(self.svc.planned()) if a.id == slot.key)
-            st.set_cursor_col(self.n_running + idx, self.timeline.n_items)
+            st.set_cursor_col(self.run_cols + idx, self.timeline.n_items)
             self.refresh_timeline()
             self.refresh_details()
 
@@ -489,7 +490,7 @@ class ScheduleScreen(Screen):
         if hit.zone != "future" or hit.col is None:
             return False
         st = self.timeline.state
-        n_run = self.n_running
+        n_run = self.run_cols
         ghost_col = n_run + self.preview.position if self.preview else None
         col = hit.col
         if ghost_col is not None and col == ghost_col:

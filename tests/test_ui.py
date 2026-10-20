@@ -186,6 +186,57 @@ async def test_multi_gpu_card_aligns_across_rows(config_dir):
         assert "pair" in strip_text(rows[1]) and "pair" not in strip_text(rows[2])
 
 
+async def test_running_work_shares_the_first_column(config_dir):
+    from zgm.runtime.mock import MockRuntime
+
+    a, b, c = task("alpha"), task("beta"), task("gamma")
+    app = make_app(config_dir, [a, b, c])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.runtime = MockRuntime(speedup=1)  # stays running
+        app.assignment_service.assign(a.id, [0])
+        app.assignment_service.assign(b.id, [1])
+        app.assignment_service.assign(c.id, [0])
+        for t in (a, b):
+            app.executor.request_run_now(t)
+        app.dispatch()
+        await pilot.pause()
+        assert app.store.tasks[b.id].status == TaskStatus.RUNNING
+        rows = {g: app.screen.query_one(f"#gpu-row-{g}", GPURow) for g in range(2)}
+        cols = {app.store.tasks[k.task_id].name: k.col for r in rows.values() for k in r.cards}
+        assert cols == {"alpha": 0, "beta": 0, "gamma": 1}
+        tl = app.screen.query_one(GPUTimeline)
+        assert tl.n_items == 2
+        tl.set_cursor(1, 0)
+        assert tl.slot_under_cursor().task_id == b.id
+        tl.set_cursor(0, 1)
+        assert tl.slot_under_cursor().task_id == c.id
+
+
+async def test_cards_stay_in_view_when_the_queue_shrinks(config_dir):
+    tasks = [task(f"t{i}") for i in range(12)]
+    app = make_app(config_dir, tasks)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        for t in tasks:
+            app.assignment_service.assign(t.id, [0])
+        await pilot.pause()
+        tl = app.screen.query_one(GPUTimeline)
+        tl.state.scroll_future(99, tl.n_items)  # scrolled to the end of a long queue
+        tl._changed()
+        await pilot.pause()
+        assert tl.state.future_scroll > 3
+        for t in tasks[3:]:  # most of the queue goes away elsewhere (done, moved)
+            app.assignment_service.unassign(app.store.active_assignment(t.id).id)
+        app.screen.refresh_timeline()
+        await pilot.pause()
+        row = app.screen.query_one("#gpu-row-0", GPURow)
+        assert [c.col for c in row.cards] == [0, 1, 2]
+        # the scroll came back inside the queue: its last card and the end slot are in view
+        assert tl.state.future_scroll <= max(0, tl.n_items + 1 - tl.state.visible_cols)
+        assert tl.state.col_x(2) is not None
+
+
 async def test_history_left_of_now_uses_actual_times(config_dir):
     from datetime import datetime
 

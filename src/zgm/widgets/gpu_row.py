@@ -1,7 +1,8 @@
 """GPURow: one GPU's label column plus its timeline strip.
 
-Left of "now" the strip is to scale (history); right of "now" every queued
-assignment is a fixed-width card in its own column. The timeline builds the
+Left of "now" the strip is to scale (history); right of "now" running work
+shares the first column (its GPUs never overlap) and every queued assignment is
+a fixed-width card in its own column after it. The timeline builds the
 cards once and hands the same list to every row, so a multi-GPU card lines up
 in the same column on each of its rows.
 """
@@ -133,7 +134,10 @@ class GPURow(Widget):
         return screen_x - self.region.x - LABEL_WIDTH
 
     def card_at(self, col: int | None) -> Card | None:
-        return next((c for c in self.cards if c.col == col), None)
+        """The card in column ``col``; in a column of running work, this GPU's."""
+        here = [c for c in self.cards if c.col == col]
+        return next((c for c in here if self.gpu.id in c.gpu_ids),
+                    here[0] if len(here) == 1 else None)
 
     # rendering -------------------------------------------------------------
     def _label_line(self, y: int) -> list[Segment]:

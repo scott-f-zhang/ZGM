@@ -158,8 +158,14 @@ class TimelineState:
         return self.future_scroll, max(0, total - self.future_scroll - self.visible_cols)
 
     def scroll_future(self, delta: int, n_items: int) -> None:
+        self.future_scroll += delta
+        self.clamp_scroll(n_items)
+
+    def clamp_scroll(self, n_items: int) -> None:
+        """Keep the scroll inside the queue, also when the queue got shorter
+        (work ended or moved elsewhere); else every card is out of view."""
         self.future_scroll = max(0, min(max(0, n_items + 1 - self.visible_cols),
-                                        self.future_scroll + delta))
+                                        self.future_scroll))
 
     def pan_past(self, cells: int) -> None:
         """Positive = further back into history."""
