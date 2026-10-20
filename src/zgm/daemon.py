@@ -235,9 +235,9 @@ def status(args) -> int:
     print(f"running:    {len(running)}")
     for a in sorted(running, key=lambda a: a.actual_start or datetime.min):
         task = store.tasks.get(a.task_id)
-        gpus = ",".join(map(str, a.display_gpu_ids))
+        ids = ",".join(map(str, a.display_gpu_ids))
         since = f"{a.actual_start:%H:%M}" if a.actual_start else "?"
-        print(f"  {task.name if task else a.task_id}  GPU {gpus}  since {since}"
+        print(f"  {task.name if task else a.task_id}  GPU {ids}  since {since}"
               + (f"  log {a.log_path}" if a.log_path else ""))
     print(f"queued:     {len(planned)}")
     GPUWatch(provider, gpus).refresh(store)

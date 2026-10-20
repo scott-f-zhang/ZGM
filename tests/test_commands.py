@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -12,6 +13,7 @@ import pytest
 
 from zgm.commands import CommandError, main as command_main, resolve
 from zgm.models import Task
+from zgm.services.filelock import is_locked
 from zgm.services.scheduler import AssignmentService
 from zgm.services.task_store import TaskStore
 from zgm.storage.sqlite import SqliteStorage
@@ -28,8 +30,10 @@ sys.exit(int(sys.argv[1]))
 
 
 def zgm(*args, check=False, timeout=60):
+    # the same 4 mock GPUs as the daemon below, also on a machine with NVML
     return subprocess.run([PY, "-m", "zgm", *args], capture_output=True, cwd=ROOT,
-                          timeout=timeout, check=check)
+                          timeout=timeout, check=check,
+                          env={**os.environ, "ZGM_MOCK_GPUS": "4"})
 
 
 def out(result) -> str:
@@ -119,6 +123,11 @@ def daemon(db):
     proc = subprocess.Popen([PY, "-m", "zgm", "daemon", "run", "--db", str(db),
                              "--mock-gpus", "4", "--interval", "0.2"], cwd=ROOT,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    lock = Path(f"{db}.executor.lock")
+    deadline = time.monotonic() + 30
+    while not (lock.exists() and is_locked(lock)):  # it runs the queue
+        assert proc.poll() is None and time.monotonic() < deadline, "daemon did not start"
+        time.sleep(0.05)
     yield db
     zgm("daemon", "stop", "--db", str(db))
     proc.kill()
@@ -160,6 +169,8 @@ def test_submit_wait_read_stop(daemon, tmp_path):
     deadline = time.time() + 30
     while records(db)["long"]["status"] != "running" and time.time() < deadline:
         time.sleep(0.2)
+    r = zgm("daemon", "status", "--db", str(db))
+    assert r.returncode == 0 and "  long  GPU 1  since" in out(r)
     r = zgm("stop", "--db", str(db), long["id"][:6], "--json")
     assert r.returncode == 0 and json.loads(out(r))["action"] == "stopped"
     rows = records(db)

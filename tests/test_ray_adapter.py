@@ -51,8 +51,11 @@ def test_failed_command(runtime):
 
 
 # the whole path: executor -> RayRuntime -> launcher -> the user's script --------------------
-def test_executor_runs_user_scripts_on_ray(tmp_path):
+def test_executor_runs_user_scripts_on_ray(tmp_path, monkeypatch):
     import sys
+
+    # Ray refuses more logical GPUs than CUDA_VISIBLE_DEVICES lists (e.g. under Slurm)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     from zgm.models import AssignmentState, LaunchSpec, TaskStatus
     from zgm.services.executor import Executor

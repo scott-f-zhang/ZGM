@@ -28,11 +28,12 @@ def pid_alive(pid: int) -> bool:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
                              capture_output=True, text=True).stdout
         return str(pid) in out
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+    import psutil
+
+    try:  # a killed child of this process stays a zombie until it is reaped
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
         return False
-    return True
 
 
 # LaunchSpec -----------------------------------------------------------------
