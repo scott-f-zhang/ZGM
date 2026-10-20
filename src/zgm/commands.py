@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -268,3 +269,6 @@ def main(prog: str, argv: list[str]) -> int:
         return 1
     except KeyboardInterrupt:
         return 130
+    except BrokenPipeError:  # e.g. `zgm list | head`: the reader stopped reading
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())  # no error at exit
+        return 1
