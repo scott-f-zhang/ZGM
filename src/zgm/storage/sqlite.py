@@ -243,6 +243,16 @@ class SqliteStorage:
         self.conn.commit()
         return cur.rowcount > 0
 
+    def update_planned_times(self, a: Assignment) -> bool:
+        """Update only a queued assignment's derived start and end. Its GPUs and
+        place in the queue are left alone: another process may have just moved it."""
+        cur = self.conn.execute(
+            "UPDATE assignments SET planned_start=?, planned_end=? WHERE id=? AND state='planned'",
+            (_iso(a.planned_start), _iso(a.planned_end), a.id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def _write_assignment(self, a: Assignment) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO assignments (id, task_id, gpu_ids, preferred_gpu_ids,"

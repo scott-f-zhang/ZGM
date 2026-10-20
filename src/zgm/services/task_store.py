@@ -129,6 +129,12 @@ class TaskStore:
         if not self.storage.update_planned(a):
             self._data_version = None  # it started or went away elsewhere: reload
 
+    def update_planned_times(self, a: Assignment) -> None:
+        """Persist a queued assignment's derived times only (see SqliteStorage)."""
+        self.assignments[a.id] = a
+        if not self.storage.update_planned_times(a):
+            self._data_version = None  # it started or went away elsewhere: reload
+
     def delete_assignment(self, assignment_id: str) -> Assignment | None:
         a = self.assignments.pop(assignment_id, None)
         if a:

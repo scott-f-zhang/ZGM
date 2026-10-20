@@ -198,8 +198,8 @@ class AssignmentService:
             a = self.store.assignments[slot.key]
             if (a.planned_start, a.planned_end) != (slot.start, slot.end):
                 a.planned_start, a.planned_end = slot.start, slot.end
-                if persist:
-                    self.store.update_planned(a)
+                if persist:  # times only: our copy of the order may be stale
+                    self.store.update_planned_times(a)
 
     def preview(
         self,

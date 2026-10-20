@@ -117,3 +117,27 @@ def test_state_only_moves_forward(tmp_path):
     a.state = AssignmentState.CANCELLED
     assert not storage.save_assignment(a)
     assert storage.assignment_state(a.id) == AssignmentState.FAILED
+
+
+def test_recomputing_times_does_not_undo_a_reorder_made_elsewhere(tmp_path):
+    """The bug: the daemon re-derives start times every tick and wrote back each
+    queued assignment's place in the queue from its own copy. A reorder made in
+    a TUI between the daemon's last read and that write was undone a minute
+    later, when the times changed."""
+    from datetime import datetime, timedelta
+
+    db = tmp_path / "s.db"
+    daemon = Proc(db)
+    a, b, c = (queued(daemon, n, gpus=(1,)) for n in "abc")
+    for p in (daemon,):
+        for t in (a, b, c):  # with estimates, every start time is known and moves
+            p.store.tasks[t.id].estimated_duration = timedelta(minutes=10)
+    daemon.svc.recompute()
+    tui = Proc(db)
+    for t in (a, b, c):
+        tui.store.tasks[t.id].estimated_duration = timedelta(minutes=10)
+    tui.svc.move(tui.store.active_assignment(c.id).id, (1,), position=0)
+    later = datetime.now() + timedelta(minutes=5)
+    daemon.svc.recompute(now=later)  # before its next read
+    fresh = Proc(db)
+    assert [fresh.store.tasks[x.task_id].name for x in fresh.svc.planned()] == ["c", "a", "b"]
