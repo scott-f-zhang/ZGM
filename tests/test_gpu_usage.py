@@ -244,3 +244,26 @@ async def test_tui_waits_for_a_gpu_used_elsewhere(tmp_path, monkeypatch):
         app.tick()
         await pilot.pause()
         assert rt.started == ["b", "a"]
+
+
+def test_a_process_with_a_blanked_environment_takes_its_parents_task(monkeypatch):
+    """vLLM's EngineCore sets its process title, which blanks /proc/PID/environ:
+    the task comes from the nearest ancestor that has it."""
+    import psutil
+
+    from zgm.probe import task_of
+
+    parent, child = sleeper({"ZGM_TASK_ID": "task1"}), sleeper()
+    up = {child.pid: parent.pid}
+    try:
+        real = psutil.Process.environ
+        monkeypatch.setattr(psutil.Process, "environ",
+                            lambda self: {} if self.pid == child.pid else real(self))
+        monkeypatch.setattr(psutil.Process, "parent",
+                            lambda self: psutil.Process(up[self.pid]) if self.pid in up else None)
+        assert task_of(child.pid) == "task1"
+        up.clear()
+        assert task_of(child.pid) is None
+    finally:
+        parent.kill()
+        child.kill()

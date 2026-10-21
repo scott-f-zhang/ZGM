@@ -23,11 +23,20 @@ import psutil
 from .services.gpu_discovery import MockGPUProvider, make_provider
 
 
-def _task_of(pid: int) -> str | None:
+def task_of(pid: int) -> str | None:
+    """The ``ZGM_TASK_ID`` in the process's environment, or else its nearest
+    ancestor's: a program that sets its process title (vLLM's ``VLLM::EngineCore``,
+    via setproctitle) can blank what /proc shows of its own environment."""
     try:
-        return psutil.Process(pid).environ().get("ZGM_TASK_ID")
-    except (psutil.Error, OSError):
-        return None
+        proc = psutil.Process(pid)
+        while proc is not None:
+            task = proc.environ().get("ZGM_TASK_ID")
+            if task:
+                return task
+            proc = proc.parent()
+    except (psutil.Error, OSError):  # gone, or another user's process
+        pass
+    return None
 
 
 def probe(provider=None) -> dict:
@@ -48,7 +57,7 @@ def probe(provider=None) -> dict:
             entry["processes_visible"] = False
             procs = []
         entry["processes"] = [{"pid": p.pid, "name": p.name, "used_memory": p.used_memory,
-                               "zgm_task": _task_of(p.pid)} for p in procs]
+                               "zgm_task": task_of(p.pid)} for p in procs]
         gpus.append(entry)
     return {"host": socket.gethostname(), "gpus": gpus}
 

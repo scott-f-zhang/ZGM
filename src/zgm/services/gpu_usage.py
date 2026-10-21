@@ -22,6 +22,7 @@ from pathlib import Path
 import psutil
 
 from ..models import AssignmentState, GPUDevice, GPUProcess
+from ..probe import task_of
 from .task_store import TaskStore
 
 
@@ -46,13 +47,6 @@ def zgm_pids(store: TaskStore) -> set[int]:
     return pids
 
 
-def _task_of(pid: int) -> str | None:
-    try:
-        return psutil.Process(pid).environ().get("ZGM_TASK_ID")
-    except (psutil.Error, OSError):  # gone, or another user's process
-        return None
-
-
 def process_name(pid: int) -> str:
     try:
         return psutil.Process(pid).name()
@@ -65,7 +59,7 @@ def external(processes: Iterable[GPUProcess], own_pids: set[int],
     def ours(p: GPUProcess) -> bool:
         if p.host is not None:  # on another node: probed there
             return p.zgm_task in running_tasks
-        return p.pid in own_pids or _task_of(p.pid) in running_tasks
+        return p.pid in own_pids or task_of(p.pid) in running_tasks
 
     return [p for p in processes if not ours(p)]
 
