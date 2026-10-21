@@ -24,6 +24,12 @@ STATUS_STYLE = {
 DRAG_THRESHOLD = 2  # cells of movement before a press becomes a drag
 
 
+def priority_label(priority: int) -> tuple[str, str]:
+    """``P0``, ``P+2``, ``P-1`` and its style: raised ones stand out."""
+    text = f"P{priority:+d}" if priority else "P0"
+    return text, f"bold {theme.WARN}" if priority > 0 else theme.SUBTLE
+
+
 class TaskCard(Widget):
     selected: reactive[bool] = reactive(False)
 
@@ -73,8 +79,8 @@ class TaskCard(Widget):
         known = t.estimated_duration is not None
         out.append(f"⏱ {format_estimate(t)}\n", style=theme.MAIN_FG if known else theme.SUBTLE)
         out.append(label, style=style)
-        if t.priority:
-            out.append(f"  P{t.priority:+d}", style=theme.WARN if t.priority > 0 else theme.SUBTLE)
+        out.append("  ")
+        out.append(*priority_label(t.priority))
         if t.autofill and t.status == TaskStatus.PENDING:
             out.append("  ⟳ auto", style=theme.OK)
         if t.config_path:

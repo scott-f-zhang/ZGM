@@ -17,7 +17,7 @@ from textual.widgets.option_list import Option
 
 from ..models import Assignment, Task, format_duration
 from . import theme
-from .task_card import STATUS_STYLE
+from .task_card import STATUS_STYLE, priority_label
 
 SECTIONS = [(True, "auto-fill", "starts on GPUs left idle, highest priority first · space: move to manual"),
             (False, "manual", "place with a · space: move to auto-fill")]
@@ -125,8 +125,8 @@ class QueueOverview(OptionList):
         text = Text("   ")
         text.append(t.name.ljust(width + 2), style=theme.MAIN_FG)
         text.append(label.ljust(10), style=style)
-        text.append(f"P{t.priority:+d} " if t.priority else "   ",
-                    style=f"bold {theme.WARN}" if t.priority > 0 else theme.SUBTLE)
+        label, style = priority_label(t.priority)
+        text.append(label.ljust(5), style=style)
         text.append(f"{t.required_gpus} GPU{'s' if t.required_gpus != 1 else ' '}  ",
                     style=theme.SUBTLE)
         if run is None:

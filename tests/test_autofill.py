@@ -143,3 +143,14 @@ def test_priority_is_stored(tmp_path):
     TaskStore(SqliteStorage(tmp_path / "s.db")).add_task(Task("a", "echo a", priority=3))
     (t,) = TaskStore(SqliteStorage(tmp_path / "s.db")).tasks.values()
     assert t.priority == 3
+
+
+def test_every_task_shows_its_priority():
+    """On a queue card and in the full-screen queue, P0 included."""
+    from zgm.widgets.queue_overview import QueueOverview
+    from zgm.widgets.task_card import priority_label
+
+    assert [priority_label(p)[0] for p in (0, 2, -1)] == ["P0", "P+2", "P-1"]
+    for p, shown in ((0, "P0"), (3, "P+3")):
+        task = Task("job", "echo job", priority=p)
+        assert shown in QueueOverview.line(task, 3, None).plain
