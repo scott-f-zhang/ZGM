@@ -9,6 +9,7 @@ Whoever runs the queue (see [Running in the background](#running-in-the-backgrou
 - The status line shows **AUTO ▶** or **PAUSED ‖**, and who runs the queue, or **PLAN ONLY** if nothing does. `p` toggles auto-start for every zgm on the database; `--no-autostart` pauses it.
 - `r` starts the selected task ahead of its place in the queue: now if its GPUs are free, otherwise as soon as they are. This works while auto-start is paused.
 - A task that cannot start (missing working dir, script, python or conda env) goes back to the waiting queue as *failed* with the reason, and the queue moves on.
+- **Auto-fill** (switched in the settings view, `3`) also uses GPUs the queue leaves idle: a GPU with nothing running or queued, and no other program on it, gets the task of the waiting queue's *auto-fill* section with the highest priority that fits there (the oldest among equals) (on adjacent GPUs of one host, like a placement by hand). Tasks whose last run failed or was stopped stay where they are, so a broken task is tried once, not over and over. Nothing is filled while auto-start is paused.
 - Nothing starts while you are placing or dragging a card.
 - Nothing starts on a GPU that another program is using; see [GPUs used by other programs](#gpus-used-by-other-programs).
 

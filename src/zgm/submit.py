@@ -72,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
     where.add_argument("--first", action="store_true", help="put it at the front of the queue")
     where.add_argument("--hold", action="store_true",
                        help="add it to the waiting queue without placing it on a GPU")
+    where.add_argument("--autofill", action="store_true",
+                       help="like --hold, marked for auto-fill: it starts on the first "
+                            "GPUs left idle")
+    p.add_argument("--priority", type=int, metavar="N",
+                   help="auto-fill takes higher first (default 0, or the config's "
+                        "_scheduler_.priority)")
     p.add_argument("--json", action="store_true",
                    help="print the queued task as JSON (the fields of 'zgm list --json', "
                         "plus env_source, executor, autostart, warnings); on error, "
@@ -231,6 +237,9 @@ def submit_result(args: argparse.Namespace) -> tuple[str, dict]:
     svc = AssignmentService(store, [g.id for g in devices],
                             node_of=provider.node_of(devices) if cluster else None)
     svc.blocked, _ = GPUWatch(provider, devices).refresh(store)  # best_gpus avoids them
+    task.autofill = getattr(args, "autofill", False)
+    if getattr(args, "priority", None) is not None:
+        task.priority = args.priority
     store.add_task(task)
     lines = [f'Queued "{task.name}" (task {task.id})',
              f"  run   {task.launch.describe()}",
@@ -242,6 +251,14 @@ def submit_result(args: argparse.Namespace) -> tuple[str, dict]:
     autostart = store.storage.get_setting("autostart", "1") == "1"
     data = {"env_source": env_source, "executor": describe(holder) if holder else None,
             "autostart": autostart, "warnings": []}
+    if task.autofill:
+        if store.storage.get_setting("autofill", "1") == "1":
+            lines.append("  waiting for auto-fill: it starts on the first GPUs left idle")
+        else:
+            warning = "auto-fill is off (settings view, 3): it waits until placed or turned on"
+            data["warnings"].append(warning)
+            lines.append(f"  {warning}")
+        return "\n".join(lines), {**task_record(store, task), **data}
     if args.hold:
         lines.append("  waiting in the queue: place it on GPUs in zgm (a)")
         return "\n".join(lines), {**task_record(store, task), **data}

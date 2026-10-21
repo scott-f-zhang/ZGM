@@ -73,6 +73,10 @@ class TaskCard(Widget):
         known = t.estimated_duration is not None
         out.append(f"⏱ {format_estimate(t)}\n", style=theme.MAIN_FG if known else theme.SUBTLE)
         out.append(label, style=style)
+        if t.priority:
+            out.append(f"  P{t.priority:+d}", style=theme.WARN if t.priority > 0 else theme.SUBTLE)
+        if t.autofill and t.status == TaskStatus.PENDING:
+            out.append("  ⟳ auto", style=theme.OK)
         if t.config_path:
             out.append("  ⚙", style=theme.SUBTLE)
         return out

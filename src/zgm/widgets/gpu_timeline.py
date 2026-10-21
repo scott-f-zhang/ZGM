@@ -40,18 +40,39 @@ def pack_columns(gpu_sets: list[tuple[int, ...]]) -> list[int]:
 
 def slot_columns(slots: list[Slot]) -> tuple[list[int], int]:
     """The column of each slot, and how many columns running work takes: running
-    work shares columns (see pack_columns), queued work follows, one column each."""
+    work shares columns (see pack_columns); queued work follows, packed per GPU:
+    each item takes the first column after the items queued before it on its
+    GPUs, so a GPU's row has no gaps for other GPUs' work, and a multi-GPU item
+    lines up across its rows."""
     running = [s.gpu_ids for s in slots if s.kind == "running"]
     run_cols = pack_columns(running)
     n_run = max(run_cols, default=-1) + 1
-    cols, it, queued = [], iter(run_cols), 0
+    cols, it, next_free = [], iter(run_cols), {}
     for s in slots:
         if s.kind == "running":
             cols.append(next(it))
         else:
-            cols.append(n_run + queued)
-            queued += 1
+            col = max(next_free.get(g, n_run) for g in s.gpu_ids)
+            for g in s.gpu_ids:
+                next_free[g] = col + 1
+            cols.append(col)
     return cols, n_run
+
+
+def queue_position(slots: list[Slot], gpu: int, col: int) -> tuple[int, int]:
+    """Where something put on ``gpu`` at column ``col`` goes: (its index among the
+    queued slots, the column it lands in). Before the first item queued on that
+    GPU at or after ``col``; past the end of the row, after the last one there; on
+    a GPU with nothing queued, at the end of the queue."""
+    cols, n_run = slot_columns(slots)
+    queued = [(s, c) for s, c in zip(slots, cols) if s.kind != "running"]
+    here = [(i, c) for i, (s, c) in enumerate(queued) if gpu in s.gpu_ids]
+    for i, c in here:
+        if c >= col:
+            return i, c
+    if here:
+        return here[-1][0] + 1, here[-1][1] + 1
+    return len(queued), n_run
 
 
 def card_lines(task: Task | None, slot: Slot, width: int, now: datetime,
@@ -107,13 +128,10 @@ class TimeAxis(Widget):
             elif y == 1:
                 line[x] = "─"
         w = st.card_width
-        # queued columns are numbered like the queue everywhere else (1 = next to
-        # start); running work is labelled as such
-        number, n = {}, 0
-        for col in sorted(self.columns):
-            if self.columns[col].kind != "running":
-                n += 1
-                number[col] = n
+        # queued columns are numbered per GPU (1 = next to start on its GPUs);
+        # running work is labelled as such
+        n_run = min((c for c, s in self.columns.items() if s.kind != "running"), default=0)
+        number = {col: col - n_run + 1 for col, s in self.columns.items() if s.kind != "running"}
         for col, slot in self.columns.items():
             x = st.col_x(col)
             if x is None or x + w > width:
@@ -141,7 +159,7 @@ class GPUTimeline(Vertical, can_focus=True):
         Binding("l", "pan(-1)", "history ▶", show=False),
         Binding("plus,equals_sign,=", "zoom(-1)", "zoom in", show=False),
         Binding("minus,-", "zoom(1)", "zoom out", show=False),
-        Binding("t", "now", "now"),
+        Binding("g", "now", "now"),
     ]
 
     class CursorMoved(Message):

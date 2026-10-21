@@ -115,9 +115,14 @@ def sup(n: int) -> str:
 
 def box_title(name: str, key: int | str | None = None, info: str = "") -> str:
     """Markup for a btop-style title in a box's top line: ``─┐¹name┌``.
-    ``info`` follows in dim text inside the same notch."""
+    ``info`` follows in dim text inside the same notch. A letter ``key`` that
+    starts ``name`` is shown as that letter in the key colour (``─┐queue┌``, q red)."""
     from textual.markup import escape
 
+    if isinstance(key, str) and name.startswith(key):
+        extra = f" [{SUBTLE}]{escape(info)}[/]" if info else ""
+        return (f"─┐[b {HI_FG}]{escape(key)}[/][b {TITLE}]{escape(name[len(key):])}[/]"
+                f"{extra}┌")
     num = f"[{HI_FG}]{sup(key) if isinstance(key, int) else key}[/]" if key is not None else ""
     extra = f" [{SUBTLE}]{escape(info)}[/]" if info else ""
     return f"─┐{num}[b {TITLE}]{escape(name)}[/]{extra}┌"

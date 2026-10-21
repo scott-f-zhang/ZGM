@@ -188,6 +188,21 @@ def test_submit_hold_and_gpu_id_errors(proj, tmp_path):
     assert len(TaskStore(SqliteStorage(db)).tasks) == 1  # failed submits left nothing
 
 
+
+def test_submit_autofill_waits_marked_for_it(proj, tmp_path):
+    db = tmp_path / "s.db"
+    report = submit(args("--python", PY, "--autofill", "train.py", db=db))
+    assert "waiting for auto-fill" in report
+    store, planned = queued(db)
+    (t,) = store.tasks.values()
+    assert t.autofill and t.status == TaskStatus.PENDING and not planned
+    store.storage.set_setting("autofill", "0")
+    report = submit(args("--python", PY, "--autofill", "train.py", db=db))
+    assert "auto-fill is off" in report
+    submit(args("--python", PY, "--autofill", "--priority", "2", "train.py", db=db))
+    store, _ = queued(db)
+    assert sorted(t.priority for t in store.tasks.values()) == [0, 0, 2]
+
 def test_cli_entry_point(proj, tmp_path, capsys):
     db = tmp_path / "s.db"
     with pytest.raises(SystemExit) as ok:

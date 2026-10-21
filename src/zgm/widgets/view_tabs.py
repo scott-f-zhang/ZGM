@@ -9,7 +9,7 @@ from textual.widgets import Static
 
 from . import theme
 
-VIEWS = [("schedule", 1, "schedule"), ("configs", 2, "configs")]
+VIEWS = [("schedule", 1, "schedule"), ("configs", 2, "configs"), ("settings", 3, "settings")]
 BRAND = " zgm "
 GAP = "   "
 

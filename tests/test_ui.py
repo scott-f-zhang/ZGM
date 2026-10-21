@@ -168,7 +168,7 @@ async def test_queue_zone_shows_no_times(config_dir):
         axis = [tl.axis.render_line(y).text for y in range(2)]
         queue_text += [line[x0:] for line in axis]
         assert not any(clock.search(t) or "→" in t for t in queue_text)
-        assert "#1" in axis[0] and "#2" in axis[0]
+        assert "#1" in axis[0] and "#2" not in axis[0]  # a (GPU 0) and b (GPU 1-2): both next
         assert clock.search(axis[0][LABEL_WIDTH: x0])  # history keeps its clock
 
 
@@ -181,7 +181,8 @@ async def test_multi_gpu_card_aligns_across_rows(config_dir):
         app.assignment_service.assign(b.id, [1, 2])
         await pilot.pause()
         rows = {g: app.screen.query_one(f"#gpu-row-{g}", GPURow) for g in range(4)}
-        assert [c.col for c in rows[1].cards] == [1] and [c.col for c in rows[2].cards] == [1]
+        # each GPU's row is packed: the pair is next on GPUs 1 and 2, beside solo
+        assert [c.col for c in rows[1].cards] == [0] and [c.col for c in rows[2].cards] == [0]
         assert rows[0].cards[0].col == 0 and not rows[3].cards
         assert "pair" in strip_text(rows[1]) and "pair" not in strip_text(rows[2])
 
@@ -269,17 +270,17 @@ async def test_mouse_drag_card_onto_timeline(config_dir):
         await pilot.pause()
         screen: ScheduleScreen = app.screen
         card = screen.query_one(f"#card-{b.id}", TaskCard)
-        row = screen.query_one("#gpu-row-2", GPURow)
+        row = screen.query_one("#gpu-row-0", GPURow)
         tl = screen.timeline
         await pilot.mouse_down(card, offset=(3, 1))
         await pilot.hover(card, offset=(6, 2))  # start dragging
-        await pilot.hover(row, offset=card_offset(tl, 0))  # left half of alpha's column
+        await pilot.hover(row, offset=card_offset(tl, 0))  # left half of alpha's card
         assert screen.placement is not None and screen.placement.via_mouse
         assert screen.preview.position == 0
         await pilot.mouse_up(row, offset=card_offset(tl, 0))
         await pilot.pause()
         assert planned_names(app) == ["beta", "alpha"]
-        assert app.store.active_assignment(b.id).gpu_ids == (2,)
+        assert app.store.active_assignment(b.id).gpu_ids == (0,)
         assert screen.placement is None
 
 
@@ -317,9 +318,10 @@ async def test_mouse_drag_existing_block(config_dir):
         await pilot.hover(row3, offset=card_offset(tl, 0))
         await pilot.mouse_up(row3, offset=card_offset(tl, 0))
         await pilot.pause()
-        assert planned_names(app) == ["beta", "alpha"]
         assert app.store.active_assignment(b.id).gpu_ids == (3,)
         assert len(app.store.assignments) == 2
+        # nothing else is queued on GPU 3: beta is next there, beside alpha
+        assert [c.col for c in row3.cards] == [0] and [c.col for c in row0.cards] == [0]
 
 
 async def test_drop_on_history_cancels(config_dir):
@@ -446,6 +448,49 @@ async def test_config_edit_derive_and_task(config_dir):
         assert [c.task_model.id for c in app.screen.query(TaskCard)] == [t.id]
 
 
+
+async def test_config_shows_when_it_last_ran(config_dir):
+    from datetime import datetime
+
+    from zgm.services.task_store import add_completed_run
+
+    app = make_app(config_dir)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.press("2")
+        await pilot.pause()
+        screen: ConfigScreen = app.screen
+        repo = app.config_repo
+        table = screen.query_one("#config-table")
+        screen.current = repo.get("resnet50_base").path
+        screen.refresh_params()
+        assert table.border_subtitle == "never run"
+
+        start = datetime(2026, 10, 15, 14, 5)
+        add_completed_run(app.store, repo.make_task(repo.get("resnet50_base")), (0,),
+                          start, timedelta(hours=2, minutes=30))
+        app.store.notify()  # as the executor does when a run ends
+        await pilot.pause()  # the change reaches the screen without reselecting
+        assert table.border_subtitle == "last run 10-15 14:05 · completed, 2h30m"
+        # a child with other parameters has not run
+        screen.current = repo.get("resnet50_adamw").path
+        screen.refresh_params()
+        assert table.border_subtitle == "never run"
+
+
+async def test_config_tree_widens_for_deep_names(config_dir):
+    deep = "resnet50_base"
+    for i in range(4):  # a chain of five levels with long names
+        name = f"level_{i}_with_a_rather_long_config_name"
+        (config_dir / f"{name}.yaml").write_text(f"_base_: {deep}.yaml\nx{i}: 1\n", encoding="utf-8")
+        deep = name
+    app = make_app(config_dir)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.press("2")
+        await pilot.pause()
+        tree = app.screen.query_one("#config-tree")
+        assert 36 < tree.size.width <= SIZE[0] // 2
+
+
 async def test_runtime_disabled_by_default(config_dir):
     app = make_app(config_dir, [task("a")])
     async with app.run_test(size=SIZE) as pilot:
@@ -545,7 +590,7 @@ async def test_stop_running_task(config_dir, choice, kept):
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         await _start_running(app, pilot, a)
-        await pilot.press("s")
+        await pilot.press("K")
         await pilot.pause()
         assert isinstance(app.screen, ChoiceScreen)
         await pilot.click(f"#choice-{choice}")
@@ -566,7 +611,7 @@ async def test_stop_can_be_called_off(config_dir):
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         await _start_running(app, pilot, a)
-        await pilot.press("s")
+        await pilot.press("K")
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -647,3 +692,125 @@ async def test_run_reports_launch_errors(config_dir, tmp_path):
         assert t in app.store.waiting_tasks()
         events = [e["event"] for e in app.store.storage.history(t.id)]
         assert "launch_failed" in events
+
+
+async def test_settings_view_switches_auto_fill(config_dir):
+    from zgm.widgets.text_toggle import TextToggle
+    from zgm.screens.settings import SettingsScreen
+
+    app = make_app(config_dir)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.press("3")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+        autostart = app.screen.query_one("#setting-autostart", TextToggle)
+        autofill = app.screen.query_one("#setting-autofill", TextToggle)
+        assert autostart.value and autofill.value
+        autofill.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.store.storage.get_setting("autofill") == "0"
+        # changed elsewhere (e.g. another TUI) while this view was not shown
+        await pilot.press("1")
+        app.executor.autostart = False
+        await pilot.press("3")
+        await pilot.pause()
+        assert not app.screen.query_one("#setting-autostart", TextToggle).value
+        assert app.store.storage.get_setting("autostart") == "0"
+
+
+async def test_panels_focus_by_letter_and_go_full_screen(config_dir, tmp_path):
+    from zgm.widgets.dialogs import ChoiceScreen
+    from zgm.widgets.queue_overview import QueueOverview
+
+    a = task("alpha")
+    a.config_path = str(config_dir / "table3" / "a.yaml")
+    b = task("bravo")
+    b.config_path = str(config_dir / "ablation" / "b.yaml")
+    c = task("charlie")
+    c.autofill = True
+    app = make_app(config_dir, [a, b, c])
+    app.executor.autofill = False  # so nothing would start c on its own
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        await pilot.press("t")
+        assert app.focused is screen.timeline
+        await pilot.press("d")
+        assert app.focused.id == "task-details"
+        await pilot.press("f")  # details alone
+        await pilot.pause()
+        assert screen.zoomed == "details" and not screen.timeline.display
+        await pilot.press("q")  # full screen follows the focus
+        await pilot.pause()
+        overview = screen.query_one(QueueOverview)
+        assert screen.zoomed == "queue" and overview.display and app.focused is overview
+        lines = [str(overview.get_option_at_index(i).prompt).strip()
+                 for i in range(overview.option_count)]
+        heads = [x.split()[0] for x in lines if x and not x.startswith(("alpha", "bravo", "charlie"))]
+        assert heads == ["AUTO-FILL", "no", "MANUAL", "ablation/", "table3/"]
+        # space moves the highlighted task (bravo, the first manual one) to auto-fill
+        overview.highlighted = overview.get_option_index(b.id)
+        await pilot.press("space")
+        await pilot.pause()
+        assert app.store.tasks[b.id].autofill
+        overview.highlighted = overview.get_option_index(b.id)
+        await pilot.press("plus", "plus", "minus")
+        await pilot.pause()
+        assert app.store.tasks[b.id].priority == 1
+        await pilot.press("escape")  # leaves full screen
+        await pilot.pause()
+        assert screen.zoomed is None and screen.timeline.display and screen.queue.display
+        await pilot.press("escape")  # nothing left to cancel: the menu
+        await pilot.pause()
+        from zgm.screens.menu import MenuScreen
+        assert isinstance(app.screen, MenuScreen)
+        assert "v0.1" in str(app.screen.query_one("#menu-version").render())
+        await pilot.press("down", "up", "enter")  # Options is first
+        await pilot.pause()
+        from zgm.screens.settings import SettingsScreen
+        assert isinstance(app.screen, SettingsScreen)
+
+
+async def test_each_gpu_row_is_packed_from_the_first_queue_column(config_dir):
+    # queued first on GPUs 0 and 1, then on GPU 3: GPU 3's card must not wait two columns
+    a, b, c, d = task("on-0"), task("on-1"), task("on-3"), task("on-0-again")
+    app = make_app(config_dir, [a, b, c, d])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        svc = app.assignment_service
+        for t, g in [(a, 0), (b, 1), (c, 3), (d, 0)]:
+            svc.assign(t.id, [g])
+        await pilot.pause()
+        rows = {g: app.screen.query_one(f"#gpu-row-{g}", GPURow) for g in range(4)}
+        assert [x.col for x in rows[3].cards] == [0]
+        assert [x.col for x in rows[0].cards] == [0, 1]
+        # keyboard placement at a GPU's first column goes before the work queued there
+        e = app.store.add_task(task("new"))
+        screen = app.screen
+        screen.queue.select(e.id)
+        screen.start_placement(e.id)
+        screen.timeline.state.cursor_gpu = 0
+        screen.timeline.state.cursor_col = 0
+        screen.refresh_timeline()
+        assert screen.preview.position == 0 and screen.timeline.state.cursor_col == 0
+        await pilot.press("enter")
+        await pilot.pause()
+        assert planned_names(app)[0] == "new"
+        assert [x.col for x in rows[0].cards] == [0, 1, 2] and [x.col for x in rows[3].cards] == [0]
+
+
+def test_reordering_steps_over_work_on_the_same_gpus_only():
+    from zgm.services.scheduler import AssignmentService
+    from zgm.services.task_store import TaskStore
+
+    store = TaskStore()
+    svc = AssignmentService(store, [0, 1])
+    ts = {n: store.add_task(task(n)) for n in ("a0", "b1", "c0", "d1")}
+    ids = {n: svc.assign(t.id, [int(n[1])]).assignment.id for n, t in ts.items()}
+    names = lambda: [store.tasks[x.task_id].name for x in svc.planned()]
+    assert svc.shift(ids["c0"], -1).ok
+    assert names() == ["c0", "a0", "b1", "d1"]  # before a0; b1 and d1 keep their order
+    assert svc.shift(ids["c0"], -1).ok and names()[0] == "c0"  # already first on GPU 0
+    assert svc.shift(ids["b1"], 1).ok
+    assert names() == ["c0", "a0", "d1", "b1"]

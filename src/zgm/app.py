@@ -1,4 +1,4 @@
-"""ZGMApp: wires services to the two views (Schedule, Configs)."""
+"""ZGMApp: wires services to the views (Schedule, Configs, Settings)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from .models import Task
 from .runtime.base import Runtime
 from .screens.config import ConfigScreen
 from .screens.schedule import ScheduleScreen
+from .screens.settings import SettingsScreen
 from .services.config_repo import DEFAULT_COMMAND_TEMPLATE, ConfigRepository
 from .services.executor import Executor
 from .services.gpu_discovery import MockGPUProvider
@@ -29,12 +30,13 @@ install_box_titles()
 class ZGMApp(App):
     TITLE = "ZGM"
     CSS_PATH = "styles/app.tcss"
-    MODES = {"schedule": ScheduleScreen, "configs": ConfigScreen}
+    MODES = {"schedule": ScheduleScreen, "configs": ConfigScreen, "settings": SettingsScreen}
     DEFAULT_MODE = "schedule"
     BINDINGS = [
         Binding("1,f1", "switch_mode('schedule')", "schedule", show=False),
         Binding("2,f2", "switch_mode('configs')", "configs", show=False),
-        Binding("q", "quit", "quit"),
+        Binding("3,f3", "switch_mode('settings')", "settings", show=False),
+        Binding("escape", "menu", "menu"),
     ]
 
     def __init__(
@@ -77,6 +79,21 @@ class ZGMApp(App):
         self.stats_interval = stats_interval
         self.card_width = max(MIN_CARD_WIDTH, card_width)
         self.assignment_service.recompute()  # "now" moved since the plan was saved
+
+    def action_menu(self) -> None:
+        """Esc where there is nothing to cancel: options or exit."""
+        from .screens.menu import MenuScreen
+
+        if isinstance(self.screen, MenuScreen):
+            return
+
+        def done(choice: str | None) -> None:
+            if choice == "options":
+                self.switch_mode("settings")
+            elif choice == "exit":
+                self.exit()
+
+        self.push_screen(MenuScreen(), done)
 
     def _notify(self, message: str, severity: str = "information") -> None:
         self.notify(message, severity=severity, timeout=15 if severity == "error" else 5)

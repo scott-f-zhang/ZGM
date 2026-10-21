@@ -183,3 +183,21 @@ def test_migrates_v2_not_null_columns(tmp_path):
 
     store.save_assignment(Assignment("t1", (0,), None, None), None)  # unknown times persist
     assert TaskStore(SqliteStorage(db)).assignments
+
+
+def test_a_task_queued_again_without_an_estimate_lists_its_runs():
+    from datetime import datetime, timedelta
+
+    from zgm.models import Assignment, AssignmentState, Task
+    from zgm.services.scheduler import AssignmentService
+    from zgm.services.task_store import TaskStore
+
+    store = TaskStore()
+    t = store.add_task(Task("t", "echo t", 1))
+    now = datetime.now()
+    store.save_assignment(Assignment(task_id=t.id, gpu_ids=(0,), planned_start=now - timedelta(hours=1),
+                                     planned_end=None, actual_start=now - timedelta(hours=1),
+                                     actual_end=now, state=AssignmentState.CANCELLED), "stopped")
+    assert AssignmentService(store, [0]).assign(t.id, (0,)).ok  # no estimate: planned_start None
+    runs = store.assignments_for_task(t.id)
+    assert [a.state for a in runs] == [AssignmentState.CANCELLED, AssignmentState.PLANNED]

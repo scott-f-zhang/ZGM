@@ -86,20 +86,31 @@ To give a job GPUs, select it in the queue and press `a`. A preview shows where 
 
 | key | what it does |
 |---|---|
+| `q` `d` `t` `s` | go to the queue / details / timeline / Slurm (cluster) panel |
 | `Tab` | switch between the queue and the timeline |
+| `f` | show the focused panel full screen, or back |
 | `a` | place the selected job on GPUs |
 | `←` `→` / `↑` `↓` | while placing: move it earlier/later in line, or to other GPUs |
 | `Enter` / `Esc` | confirm / cancel; on the timeline, `Enter` picks up a queued job to move it |
 | `[` `]` | move the selected job one place earlier / later |
 | `u` | take a job off the timeline, back to the queue |
-| `n` / `e` / `d` | new job / edit / delete |
+| `n` / `e` / `x` | new job / edit / delete |
 | `r` | start a job before its turn (as soon as its GPUs are free) |
-| `s` | stop a running job |
+| `K` | stop a running job |
 | `p` | pause or resume starting jobs automatically |
+| `1` `2` `3` | schedule / configs / settings view |
 | `h` `l` / `+` `-` | scroll / zoom the history |
-| `q` | quit (running jobs keep running) |
+| `g` | on the timeline: back to now |
+| `Esc` | cancel, or leave full screen; otherwise a menu with Options and Exit (running jobs keep running) |
 
-The bar at the bottom says whether jobs are being started automatically (**AUTO**), are paused (**PAUSED**), or whether nothing is running the queue (**PLAN ONLY**; start it with `zgm daemon start`).
+The bar at the bottom says whether jobs are being started automatically (**AUTO**), are paused (**PAUSED**), or whether nothing is running the queue (**PLAN ONLY**; start it with `zgm daemon start`). **FILL** next to AUTO means auto-fill is on.
+
+The settings view (`3`) holds switches that every zgm on the queue shares:
+
+- **Auto-start** (the same as `p`).
+- **Auto-fill idle GPUs**: when a GPU has nothing running or queued, zgm starts the oldest job of the queue's *auto-fill* section that fits there. Jobs whose last run failed or was stopped are left for you.
+
+Full screen (`f`), the queue lists its jobs in two sections, **auto-fill** and **manual**, and in each by the folder of their config. New jobs go to manual. `space` moves the selected job to the other section, `A` its whole folder; `zgm submit --autofill` adds a job straight to auto-fill. Auto-fill takes the job with the highest priority first (`+` / `-` there, `zgm submit --priority N`, or `_scheduler_.priority` in a config; default 0), the oldest among equals.
 
 ## Running your own code
 

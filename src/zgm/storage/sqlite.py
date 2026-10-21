@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..models import Assignment, AssignmentState, LaunchSpec, Task, TaskStatus
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 # planned times and estimates are nullable: no run history means "unknown"
 TABLES = {
@@ -26,7 +26,9 @@ TABLES = {
     notes TEXT NOT NULL DEFAULT '',
     config_path TEXT,
     fingerprint TEXT NOT NULL DEFAULT '',
-    launch TEXT
+    launch TEXT,
+    autofill INTEGER NOT NULL DEFAULT 0,
+    priority INTEGER NOT NULL DEFAULT 0
 )""",
     "assignments": """CREATE TABLE assignments (
     id TEXT PRIMARY KEY,
@@ -167,8 +169,8 @@ class SqliteStorage:
     def save_task(self, t: Task) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO tasks (id, name, command, required_gpus, estimated_seconds,"
-            " status, created_at, notes, config_path, fingerprint, launch)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " status, created_at, notes, config_path, fingerprint, launch, autofill, priority)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 t.id,
                 t.name,
@@ -181,6 +183,8 @@ class SqliteStorage:
                 t.config_path,
                 t.fingerprint,
                 json.dumps(t.launch.to_dict()) if t.launch else None,
+                int(t.autofill),
+                t.priority,
             ),
         )
         self.conn.commit()
@@ -206,6 +210,8 @@ class SqliteStorage:
                 config_path=r["config_path"],
                 fingerprint=r["fingerprint"],
                 launch=LaunchSpec.from_dict(json.loads(r["launch"])) if r["launch"] else None,
+                autofill=bool(r["autofill"]),
+                priority=r["priority"],
             )
             for r in rows
         ]

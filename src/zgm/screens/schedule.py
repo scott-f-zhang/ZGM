@@ -1,5 +1,7 @@
 """Schedule view: task queue (top), details (middle), GPU timeline (bottom), and
-in cluster mode the groups of GPUs (e.g. Slurm jobs) under it."""
+in cluster mode the groups of GPUs (e.g. Slurm jobs) under it. Each panel is
+focused with its first letter and can be shown full screen (f); the full-screen
+queue lists the waiting tasks by section (auto-fill / manual) and config folder."""
 
 from __future__ import annotations
 
@@ -16,13 +18,14 @@ from ..models import AssignmentState, Task, TaskStatus
 from ..services.lease import describe
 from ..widgets import theme
 from ..widgets.theme import badge, box_footer, box_title, hints
-from ..services.scheduler import Result, Slot
+from ..services.scheduler import GHOST, Result, Slot
 from ..widgets.dialogs import ChoiceScreen, apply_task_edit, edit_task_form, new_task_form
 from ..widgets.gpu_row import GPURow
-from ..widgets.gpu_timeline import GPUTimeline, pack_columns
+from ..widgets.gpu_timeline import GPUTimeline, pack_columns, queue_position, slot_columns
 from ..widgets.cluster_panel import ClusterPanel
 from ..widgets.task_card import TaskCard
 from ..widgets.task_details import TaskDetails
+from ..widgets.queue_overview import QueueOverview
 from ..widgets.task_queue import TaskQueue
 from ..widgets.view_tabs import ViewTabs
 
@@ -56,18 +59,28 @@ class ScheduleScreen(Screen):
         Binding("right_square_bracket,shift+right", "shift(1)", "later", show=False),
         Binding("n", "new_task", "new task"),
         Binding("e", "edit_task", "edit/rename"),
-        Binding("d", "delete_task", "delete task"),
+        Binding("x", "delete_task", "delete task"),
         Binding("r", "run", "run now", show=False),
         Binding("p", "toggle_autostart", "auto-start"),
-        Binding("s", "stop", "stop"),
+        Binding("K", "stop", "stop"),
         Binding("tab", "toggle_focus", "queue⇄timeline"),
+        Binding("f", "toggle_zoom", "full screen"),
+        Binding("q", "focus_panel('queue')", "queue", show=False),
+        Binding("d", "focus_panel('details')", "details", show=False),
+        Binding("t", "focus_panel('timeline')", "timeline", show=False),
+        Binding("s", "focus_panel('cluster')", "cluster", show=False),
     ]
+    # panel -> its widget; each is focused with the first letter of its title
+    PANELS = {"queue": "#task-queue", "details": "#task-details",
+              "timeline": "#gpu-timeline", "cluster": "#cluster-panel"}
 
     def __init__(self, **kw) -> None:
         super().__init__(**kw)
         self.placement: Placement | None = None
         self.preview: PlacementPreview | None = None
         self.last_error: str | None = None
+        self.zoomed: str | None = None  # the panel shown full screen
+        self.subject = "queue"  # what details and actions follow: "queue" or "timeline"
 
     @property
     def svc(self):
@@ -80,11 +93,17 @@ class ScheduleScreen(Screen):
     def compose(self) -> ComposeResult:
         yield ViewTabs("schedule", id="view-tabs")
         queue = TaskQueue(id="task-queue")
-        queue.border_title = box_title("queue", info="waiting tasks")
-        queue.border_subtitle = box_footer("a assign · n new · d delete")
+        queue.border_title = box_title("queue", key="q", info="waiting tasks")
+        queue.border_subtitle = box_footer("a assign · n new · x delete · f full screen")
         yield queue
+        overview = QueueOverview(id="queue-overview")
+        overview.border_title = box_title("queue", key="q", info="waiting tasks by config folder")
+        overview.border_subtitle = box_footer(
+            "space auto-fill ⇄ manual · A whole folder · +/- priority · a assign · f back")
+        overview.display = False
+        yield overview
         details = TaskDetails(id="task-details")
-        details.border_title = box_title("details")
+        details.border_title = box_title("details", key="d")
         yield details
         timeline = GPUTimeline(self.app.gpus, card_width=self.app.card_width, id="gpu-timeline")
         timeline.border_subtitle = box_footer("history to scale ┃ now ┃ queue in order")
@@ -102,6 +121,10 @@ class ScheduleScreen(Screen):
     def timeline(self) -> GPUTimeline:
         return self.query_one(GPUTimeline)
 
+    @property
+    def overview(self) -> QueueOverview:
+        return self.query_one(QueueOverview)
+
     def on_mount(self) -> None:
         self.store.subscribe(self.refresh_all)
         self.retitle_timeline()
@@ -112,7 +135,7 @@ class ScheduleScreen(Screen):
     def retitle_timeline(self) -> None:
         n = len(self.app.gpus)
         self.timeline.border_title = box_title(
-            "timeline", info=f"{n} gpu{'s' if n != 1 else ''} · {self.app.gpu_source}")
+            "timeline", key="t", info=f"{n} gpu{'s' if n != 1 else ''} · {self.app.gpu_source}")
 
     def gpus_changed(self) -> None:
         """Cluster mode: a group's GPUs came or went."""
@@ -126,7 +149,9 @@ class ScheduleScreen(Screen):
         cluster = self.app.cluster
         panels = self.query(ClusterPanel)
         if cluster is not None and panels:
-            panels.first().show(cluster)
+            panel = panels.first()
+            panel.hidden_by_zoom = self.zoomed not in (None, "cluster")
+            panel.show(cluster)
 
     def on_unmount(self) -> None:
         self.store.unsubscribe(self.refresh_all)
@@ -138,6 +163,8 @@ class ScheduleScreen(Screen):
         if not self.is_mounted:
             return
         self.queue.set_tasks(self.store.waiting_tasks())
+        if self.zoomed == "queue":
+            self.refresh_overview()
         self.refresh_timeline()
         self.refresh_details()
 
@@ -173,7 +200,7 @@ class ScheduleScreen(Screen):
     def current_task(self) -> Task | None:
         """The task actions apply to: the card under the timeline cursor when the
         timeline has focus, otherwise the selected queue card."""
-        if self.focused is self.timeline:
+        if self.subject == "timeline":
             slot = self.timeline.slot_under_cursor()
             return self.store.tasks.get(slot.task_id) if slot else None
         return self.selected_task()
@@ -201,7 +228,8 @@ class ScheduleScreen(Screen):
             ok = p.result.ok
             msg.append(" PLACING ", style=badge(theme.OK if ok else theme.BAD))
             gpus = ",".join(map(str, p.gpu_ids))
-            msg.append(f" {task.name if task else '?'} → GPU {gpus}, queue #{p.position + 1}  ",
+            n = self.queue_number(GHOST, p.slots)
+            msg.append(f" {task.name if task else '?'} → GPU {gpus}, queue #{n}  ",
                        style=theme.MAIN_FG)
             msg.append_text(hints([("←/→", "position"), ("↑/↓", "gpu"), ("Enter", "confirm"),
                                    ("Esc", "cancel")]))
@@ -212,19 +240,21 @@ class ScheduleScreen(Screen):
             if info is not None:
                 if self.app.autostart:
                     msg.append(" AUTO ▶ ", style=badge(theme.OK))
+                    if self.app.executor.autofill:
+                        msg.append(" FILL ", style=badge(theme.OK))
                 else:
                     msg.append(" PAUSED ‖ ", style=badge(theme.WARN))
                 who = (f"{info.get('runtime')} runtime" if self.app.is_executor
                        else f"run by {describe(info)}")
                 msg.append(f" {who}  ", style=theme.SUBTLE)
-                msg.append_text(hints([("p", "pause"), ("r", "run now")]))
+                msg.append_text(hints([("p", "pause"), ("r", "run now"), ("K", "stop")]))
             else:
                 msg.append(" PLAN ONLY ", style=badge(theme.INACTIVE_FG, theme.MAIN_FG))
                 msg.append(" nothing runs: zgm daemon start", style=theme.SUBTLE)
             msg.append("   ")
-            msg.append_text(hints([("Tab", "queue⇄timeline"), ("Enter", "pick up"),
-                                   ("[ ]", "reorder"), ("u", "unassign"), ("e", "edit"),
-                                   ("s", "stop"), ("h/l +/-", "history")]))
+            msg.append_text(hints([("q d t s", "focus"), ("f", "full screen"),
+                                   ("Enter", "pick up"), ("[ ]", "reorder"), ("u", "unassign"),
+                                   ("e", "edit"), ("h/l +/-", "history"), ("Esc", "menu")]))
         self.query_one("#status-line", Static).update(msg)
 
     # placement -------------------------------------------------------------
@@ -233,6 +263,8 @@ class ScheduleScreen(Screen):
         return len([a for a in self.svc.planned() if a.id != moving])
 
     def compute_preview(self, now: datetime) -> PlacementPreview | None:
+        """The placement where the cursor points: before the item queued at the
+        cursor's column on its GPU, or at the end of that GPU's row."""
         p = self.placement
         if not p:
             return None
@@ -240,13 +272,24 @@ class ScheduleScreen(Screen):
         if task is None:
             return None
         st = self.timeline.state
-        n_run = self.run_cols
-        pos = max(0, min(self._base_len(), st.cursor_col - n_run))
-        st.cursor_col = n_run + pos
+        base = [s for s in self.svc.schedule(now) if s.key != p.assignment_id]
+        pos, _ = queue_position(base, st.cursor_gpu, st.cursor_col)
         gpus = self.svc.suggest_gpus(task, st.cursor_gpu)
         res = self.svc.check(task.id, gpus, assignment_id=p.assignment_id)
         slots, ghost = self.svc.preview(task.id, gpus, pos, p.assignment_id, now)
+        cols, _ = slot_columns(slots)
+        st.cursor_col = next(c for s, c in zip(slots, cols) if s.key == GHOST)
         return PlacementPreview(gpus, pos, res, ghost, slots)
+
+    def queue_number(self, assignment_id: str, slots=None) -> int | None:
+        """A queued assignment's place on its GPUs (1 = next), as the timeline numbers it."""
+        slots = slots if slots is not None else self.svc.schedule()
+        cols, n_run = slot_columns(slots)
+        return next((c - n_run + 1 for s, c in zip(slots, cols) if s.key == assignment_id), None)
+
+    def column_of(self, key: str) -> int | None:
+        tl = self.timeline
+        return next((c for s, c in zip(tl.slots, tl.cols) if s.key == key), None)
 
     def start_placement(self, task_id: str, assignment_id: str | None = None,
                         via_mouse: bool = False) -> None:
@@ -262,21 +305,23 @@ class ScheduleScreen(Screen):
             if existing is not None and existing.state == AssignmentState.PLANNED:
                 assignment_id = existing.id
         from_queue = self.focused is not self.timeline
+        if self.zoomed:
+            self.set_zoom(None)  # placing needs the timeline
         self.placement = Placement(task_id, assignment_id, via_mouse, from_queue)
         self.last_error = None
         st = self.timeline.state
-        planned = self.svc.planned()
+        end = 1 << 30  # past the end of any row: compute_preview puts it after the last item
         if via_mouse:
             # park the ghost at the end so it doesn't shift the columns under the pointer
-            st.cursor_col = self.run_cols + len(planned)
+            st.cursor_col = end
         else:
             if assignment_id:
                 a = self.store.assignments[assignment_id]
                 st.cursor_gpu = a.gpu_ids[0]
-                idx = next(i for i, x in enumerate(planned) if x.id == assignment_id)
-                st.set_cursor_col(self.run_cols + idx, self.run_cols + len(planned))
+                col = self.column_of(assignment_id)
+                st.cursor_col = col if col is not None else end
             else:
-                st.set_cursor_col(self.run_cols + len(planned), self.run_cols + len(planned))
+                st.cursor_col = end
             self.timeline.focus()
         self.refresh_timeline()
         self.refresh_details()
@@ -305,8 +350,8 @@ class ScheduleScreen(Screen):
         self.last_error = None
         a = out.assignment
         task = self.store.tasks[p.task_id]
-        pos = next(i for i, x in enumerate(self.svc.planned()) if x.id == a.id)
-        self.notify(f"{task.name} → GPU {','.join(map(str, a.gpu_ids))}, queue #{pos + 1}",
+        self.notify(f"{task.name} → GPU {','.join(map(str, a.gpu_ids))}, "
+                    f"queue #{self.queue_number(a.id)}",
                     title="Planned")
         self.refresh_all()
         return True
@@ -348,8 +393,107 @@ class ScheduleScreen(Screen):
             self.action_place()
 
     def action_cancel(self) -> None:
+        """Esc: cancel the placement, else leave full screen, else the menu."""
         if self.placement:
             self.cancel_placement()
+        elif self.zoomed:
+            self.set_zoom(None)
+        else:
+            self.app.action_menu()
+
+    # panels: focus and full screen -------------------------------------------
+    def panel_widget(self, name: str):
+        if name == "queue" and self.zoomed == "queue":
+            return self.overview
+        return self.query_one(self.PANELS[name])
+
+    def focused_panel(self) -> str | None:
+        node = self.focused
+        while node is not None and node is not self:
+            if node is self.overview:
+                return "queue"
+            for name, sel in self.PANELS.items():
+                if node.id == sel[1:]:
+                    return name
+            node = node.parent
+        return None
+
+    def panel_available(self, name: str) -> bool:
+        return name != "cluster" or self.query_one(ClusterPanel).has_groups
+
+    def action_focus_panel(self, name: str) -> None:
+        if self.placement or not self.panel_available(name):
+            return
+        if self.zoomed and self.zoomed != name:
+            self.set_zoom(name)  # full screen follows the focus
+        self.panel_widget(name).focus()
+
+    def action_toggle_zoom(self) -> None:
+        if self.placement:
+            return
+        name = self.focused_panel() or "queue"
+        self.set_zoom(None if self.zoomed == name else name)
+
+    def set_zoom(self, name: str | None) -> None:
+        """Show ``name`` alone, over the whole view (None: every panel again)."""
+        self.zoomed = name
+        for pname, sel in self.PANELS.items():
+            w = self.query_one(sel)
+            w.set_class(pname == name, "-zoomed")
+            if pname == "cluster":
+                w.hidden_by_zoom = name not in (None, "cluster")
+                w.display = w.has_groups and not w.hidden_by_zoom
+            elif pname == "queue":
+                w.display = name is None
+            else:
+                w.display = name in (None, pname)
+        self.overview.display = name == "queue"
+        if name == "queue":
+            self.refresh_overview()
+        if name is not None:
+            self.panel_widget(name).focus()
+        elif self.focused is None or not self.focused.display:
+            self.queue.focus()
+        self.refresh_all()
+
+    def refresh_overview(self) -> None:
+        def last_run(t: Task):
+            runs = [a for a in self.store.assignments_for_task(t.id) if a.actual_start]
+            return max(runs, key=lambda a: a.actual_start) if runs else None
+
+        self.overview.set_tasks(self.store.waiting_tasks(), self.app.config_repo.root,
+                                last_run, selected=self.queue.selected_id)
+
+    def on_queue_overview_selection_changed(self, event: QueueOverview.SelectionChanged) -> None:
+        self.queue.select(event.task_id)
+
+    def on_queue_overview_toggle(self, event: QueueOverview.Toggle) -> None:
+        for tid in event.task_ids:
+            task = self.store.tasks.get(tid)
+            if task is not None:
+                task.autofill = event.autofill
+                self.store.update_task(task, quiet=True)
+        self.store.notify()
+        where = "auto-fill" if event.autofill else "manual"
+        n = len(event.task_ids)
+        self.notify(f"{n} task{'s' if n != 1 else ''} → {where}"
+                    + ("" if not event.autofill or self.app.executor.autofill
+                       else " (auto-fill is off: settings, 3)"))
+        self.app.dispatch()
+
+    def on_queue_overview_priority(self, event: QueueOverview.Priority) -> None:
+        task = self.store.tasks.get(event.task_id)
+        if task is None:
+            return
+        task.priority += event.delta
+        self.store.update_task(task)
+        self.notify(f"{task.name}: priority {task.priority:+d}")
+
+    def on_option_list_option_selected(self, event) -> None:
+        """Enter on a task in the full-screen queue: place it."""
+        if event.option.id:
+            self.queue.select(event.option.id)
+            self.start_placement(event.option.id)
 
     def action_unassign(self) -> None:
         if self.focused is self.timeline:
@@ -373,9 +517,10 @@ class ScheduleScreen(Screen):
             return
         res = self.svc.shift(slot.key, delta)
         if res.ok:
-            st = self.timeline.state
-            idx = next(i for i, a in enumerate(self.svc.planned()) if a.id == slot.key)
-            st.set_cursor_col(self.run_cols + idx, self.timeline.n_items)
+            self.refresh_timeline()
+            col = self.column_of(slot.key)
+            if col is not None:
+                self.timeline.state.set_cursor_col(col, self.timeline.n_items)
             self.refresh_timeline()
             self.refresh_details()
 
@@ -477,6 +622,10 @@ class ScheduleScreen(Screen):
         self.refresh_details()
 
     def on_descendant_focus(self, event) -> None:
+        if self.focused is self.timeline:
+            self.subject = "timeline"
+        elif self.focused in (self.queue, self.overview):
+            self.subject = "queue"
         self.refresh_timeline()
         self.refresh_details()
 
@@ -490,16 +639,17 @@ class ScheduleScreen(Screen):
         if hit.zone != "future" or hit.col is None:
             return False
         st = self.timeline.state
-        n_run = self.run_cols
-        ghost_col = n_run + self.preview.position if self.preview else None
+        ghost = self.preview.ghost if self.preview else None
+        ghost_col = self.column_of(GHOST) if ghost else None
         col = hit.col
-        if ghost_col is not None and col == ghost_col:
+        if ghost_col is not None and col == ghost_col and gpu in ghost.gpu_ids:
             insert = ghost_col
         else:
-            base = col if ghost_col is None or col < ghost_col else col - 1
-            insert = base + (1 if hit.after else 0)
+            # on the ghost's rows, the items after it are drawn one column further
+            shifted = ghost_col is not None and gpu in ghost.gpu_ids and col > ghost_col
+            insert = (col - 1 if shifted else col) + (1 if hit.after else 0)
         st.cursor_gpu = gpu
-        st.cursor_col = max(n_run, min(n_run + self._base_len(), insert))
+        st.cursor_col = max(self.run_cols, insert)
         self.refresh_timeline()
         self.refresh_details()
         return True

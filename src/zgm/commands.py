@@ -83,6 +83,8 @@ def task_record(store: TaskStore, task: Task) -> dict:
         "cwd": spec.cwd,
         "environment": spec.environment or None,
         "config": task.config_path,
+        "autofill": task.autofill,
+        "priority": task.priority,
         "created": _iso(task.created_at),
     }
 

@@ -16,11 +16,16 @@ STATE_COLOR = {"RUNNING": theme.OK, "PENDING": theme.WARN}
 STALE = 120  # seconds: older data means no executor follows the groups any more
 
 
-class ClusterPanel(Static):
+class ClusterPanel(Static, can_focus=True):
+    has_groups = False
+    hidden_by_zoom = False  # another panel is full screen
+    hotkey = "s"  # ScheduleScreen focuses it with this key
+
     def show(self, provider) -> None:
         """``provider``: the app's ClusterProvider."""
         table = provider.table()
-        self.display = bool(table)
+        self.has_groups = bool(table)
+        self.display = bool(table) and not self.hidden_by_zoom
         if not table:
             return
         widths = [max(len(r[i]) for r in table) for i in range(len(table[0]) - 1)]
@@ -41,5 +46,5 @@ class ClusterPanel(Static):
             info += f" · as of {seen[11:16]}"
             if (datetime.now() - datetime.fromisoformat(seen)).total_seconds() > STALE:
                 info += " · not updated: no executor follows them"
-        self.border_title = theme.box_title(provider.backend.name, info=info)
+        self.border_title = theme.box_title(provider.backend.name, key=self.hotkey, info=info)
         self.update(text)

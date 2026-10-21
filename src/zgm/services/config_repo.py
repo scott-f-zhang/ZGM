@@ -270,6 +270,7 @@ class ConfigRepository:
             required_gpus=gpus,
             config_path=str(node.path),
             fingerprint=self.params_fingerprint(node, gpus),
+            priority=int(meta.get("priority", 0)),
         )
 
 

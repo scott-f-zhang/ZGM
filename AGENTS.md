@@ -75,7 +75,7 @@ Check `warnings` in the `submit --json` output: a non-empty list means the job w
 | `running` | its process is running | no |
 | `completed` | exited with code 0 | yes |
 | `failed` | exited non-zero (`exit_code`); or lost (no trace left: killed outright, reboot); or **could not start** (`last_run` is `null`; the reason is in the daemon log) | yes |
-| `pending` | in the waiting list, not queued on GPUs: submitted with `--hold`, or stopped (`last_run` = `cancelled`). It will not start on its own | yes, for an agent |
+| `pending` | in the waiting list, not queued on GPUs: submitted with `--hold`, or stopped (`last_run` = `cancelled`). It will not start on its own, unless it was submitted with `--autofill` (see below) | yes, for an agent, unless `autofill` is true |
 | `cancelled` | its run was stopped, and it was not put back in the waiting list | yes |
 
 `estimate_seconds` is the median of earlier successful runs of the same job, or `null` if there are none. `planned_start` is derived from those estimates and is `null` when unknown.
@@ -112,6 +112,8 @@ RUN is one of:
 | `--config FILE` | build the task from a zgm YAML config (see README, "Experiment settings") |
 | `--first` | put it at the front of the queue |
 | `--hold` | only add it to the waiting list; it won't start until placed in the TUI |
+| `--autofill` | like `--hold`, marked for auto-fill: it starts on the first GPUs left idle (see below) |
+| `--priority N` | auto-fill takes higher first (default 0, or the config's `_scheduler_.priority`; negative is fine) |
 | `--json` | print the queued task as JSON (see [Task records](#task-records)); on error `{"error": ...}` |
 | `--no-check` | skip the pre-check below |
 | `--db PATH`, `--mock-gpus N` | as everywhere |
@@ -137,7 +139,7 @@ See [Stop or remove a task](#stop-or-remove-a-task). Exit codes: 0 done, 1 nothi
 | command | prints | exit |
 |---|---|---|
 | `start [--runtime local\|ray\|mock] [--no-autostart] [--cluster slurm\|none] [--log-dir DIR]` | `started: ...` / `already running: ...` / `started (pid N); it takes over when a zgm TUI ... exits` | 0; 1 if it didn't come up (see `daemon.log`) |
-| `status` | queue, executor, `gpus:`, `auto-start:`, running jobs (with log paths), queued count, GPUs used by other programs | 0 |
+| `status` | queue, executor, `gpus:`, `auto-start:`, `auto-fill:`, running jobs (with log paths), queued count, GPUs used by other programs | 0 |
 | `stop` | `stopped (pid N); running tasks keep running` / `not running` | 0; 1 if a TUI (not a daemon) runs the queue, or the daemon didn't exit |
 | `run` | the daemon in the foreground, logging to stdout | 0 on Ctrl+C / SIGTERM |
 
@@ -148,6 +150,7 @@ queue:      /home/me/.local/share/zgm/state.db
 executor:   zgm daemon (pid 12345, local runtime) since 2026-10-15T14:00:00
 gpus:       8 x NVIDIA H100 80GB HBM3 (NVML)
 auto-start: on
+auto-fill:  on (0 waiting tasks marked for it)
 running:    1
   rn50-lr3e-4  GPU 0,1  since 14:05  log /home/me/.local/share/zgm/logs/9f8e7d6c.log
 queued:     3
@@ -161,6 +164,8 @@ daemon log: /home/me/.local/share/zgm/daemon.log
 ```bash
 .venv/bin/python -c "import sys; from zgm.storage.sqlite import SqliteStorage; SqliteStorage(sys.argv[1]).set_setting('autostart', '1')" ~/.local/share/zgm/state.db
 ```
+
+**Auto-fill** starts waiting tasks that are marked for it (`"autofill": true` in the task record; `zgm submit --autofill`, or the TUI's full-screen queue): when a GPU has nothing running or queued and no other program uses it, the executor gives it the marked task with the highest `priority` that fits (adjacent GPUs on one host), the oldest among equals. It skips tasks whose last run failed or was stopped, and does nothing while auto-start is paused. Use `--autofill` for work that can run on whichever GPU frees up first; use `--gpu-ids` or plain `submit` when it must run in a given order or place. The switch for all of it is on by default (`auto-fill: on` in `zgm daemon status`); a person turns it off in the TUI's settings view (`3`). It is stored in the database (setting `autofill`); don't change it yourself.
 
 ## Several hosts (cluster mode)
 

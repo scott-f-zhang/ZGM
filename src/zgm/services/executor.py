@@ -2,8 +2,8 @@
 
 Exactly one process per database ticks an Executor: the holder of the
 ExecutorLease (``zgm daemon``, or a TUI with ``--runtime``). Other zgm
-processes are clients. They only use ``stop``, ``request_run_now`` and
-``autostart``, which act through the database (plus, for local runs, the run's
+processes are clients. They only use ``stop``, ``request_run_now``,
+``autostart`` and ``autofill``, which act through the database (plus, for local runs, the run's
 own files), so the executor sees the change on its next tick.
 """
 
@@ -46,6 +46,15 @@ class Executor:
     @autostart.setter
     def autostart(self, on: bool) -> None:
         self.store.storage.set_setting("autostart", "1" if on else "0")
+
+    @property
+    def autofill(self) -> bool:
+        """Put waiting tasks marked for auto-fill on idle GPUs (see ``fill_idle``)."""
+        return self.store.storage.get_setting("autofill", "1") == "1"
+
+    @autofill.setter
+    def autofill(self, on: bool) -> None:
+        self.store.storage.set_setting("autofill", "1" if on else "0")
 
     # the executor's loop ----------------------------------------------------------
     def tick(self, hold: bool = False) -> list[Task]:
@@ -122,7 +131,8 @@ class Executor:
 
     def dispatch(self) -> list[Task]:
         """Start what may start now: tasks asked to run now (r) as soon as their
-        GPUs are free, then — unless paused — the queue in order."""
+        GPUs are free, then — unless paused — the queue in order, then (auto-fill)
+        waiting tasks on the GPUs left idle."""
         if self.runtime is None:
             return []
         started = []
@@ -136,9 +146,49 @@ class Executor:
                 task = self.store.tasks[a.task_id]
                 if self.start(task, a):
                     started.append(task)
+            if self.autofill:
+                started += self.fill_idle()
         if started:
             self.notify(f"Started {', '.join(t.name for t in started)}")
         return started
+
+    def fill_idle(self) -> list[Task]:
+        """Auto-fill: start waiting tasks marked for it (``Task.autofill``), highest
+        ``priority`` first and oldest first among equals, on GPUs with nothing to do:
+        nothing running or queued there, and not used by other programs. A task
+        goes on adjacent GPUs of one host, as when it is placed by hand; one that
+        doesn't fit is passed over for the next."""
+        if not self.svc.gpu_ids:
+            return []
+        claimed = (self.svc.busy_gpus() | self.svc.unavailable()
+                   | {g for a in self.svc.planned() for g in a.gpu_ids})
+        idle = [g for g in self.svc.gpu_ids if g not in claimed]
+        started = []
+        for task in sorted(self.store.waiting_tasks(), key=lambda t: -t.priority):
+            if not idle:
+                break
+            if not self.fillable(task):
+                continue
+            windows = (self.svc.suggest_gpus(task, g) for g in idle)
+            gpus = next((w for w in windows
+                         if len(w) == task.required_gpus and set(w) <= set(idle)), None)
+            if gpus is None:
+                continue
+            res = self.svc.assign(task.id, gpus)
+            if not res.ok:
+                continue
+            idle = [g for g in idle if g not in gpus]
+            if self.start(task, res.assignment):
+                started.append(task)
+        return started
+
+    def fillable(self, task: Task) -> bool:
+        """Auto-fill takes a waiting task marked for it, unless its last attempt
+        failed or was stopped: those wait for a person to look at them."""
+        if not task.autofill or task.status != TaskStatus.PENDING:
+            return False  # failed (incl. could not start) or cancelled
+        runs = [a for a in self.store.assignments_for_task(task.id) if a.actual_start]
+        return not runs or max(runs, key=lambda a: a.actual_start).state == AssignmentState.COMPLETED
 
     # actions ------------------------------------------------------------------------
     def start(self, task: Task, a: Assignment) -> bool:

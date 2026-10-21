@@ -105,7 +105,8 @@ GPURow {
     height: 1fr;
 }
 #config-tree {
-    width: 36;
+    width: 36;                      /* widened to fit its labels (config.py) */
+    max-width: 50%;
     border: round #5c588d;          /* net_box */
     border-title-color: #5c588d;
     background: #000000;
@@ -136,4 +137,63 @@ GPURow {
     border-title-color: #6c6c4b;
     padding: 0 1;
     overflow-y: auto;
+}
+
+/* ---------- Settings view ---------- */
+#settings-box {
+    height: 1fr;
+    border: round #5c588d;          /* net_box */
+    border-title-color: #b0a9de;
+    padding: 1 2;
+}
+.setting-row {
+    height: auto;
+    margin-bottom: 1;
+}
+.setting-line {
+    height: 1;
+}
+.setting-name {
+    width: 24;
+}
+.setting-line TextToggle {
+    width: 34;
+}
+.setting-help {
+    height: auto;
+}
+#settings-note {
+    height: auto;
+}
+
+/* ---------- panels: focus and full screen (f) ---------- */
+#queue-overview {
+    height: 1fr;
+    border: round #77ca9b;
+    border-title-color: #77ca9b;
+    border-subtitle-color: #556d59;
+    border-subtitle-align: right;
+    background: #000000;
+    padding: 0 1;
+}
+#task-details:focus {
+    border: round #b4b46c;
+    border-title-color: #b4b46c;
+}
+#task-details.-zoomed {
+    height: 1fr;
+}
+#cluster-panel:focus {
+    border: round #b0a9de;
+    border-title-color: #b0a9de;
+}
+#cluster-panel.-zoomed {
+    height: 1fr;
+    max-height: 100%;
+}
+
+/* dialogs: the view stays visible, dimmed, behind them (Screen's own black
+   background above would otherwise cover it) */
+ModalScreen {
+    background: #000000 60%;
 }

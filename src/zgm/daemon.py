@@ -278,6 +278,10 @@ def status(args) -> int:
             print(line)
     autostart = store.storage.get_setting("autostart", "1") == "1"
     print(f"auto-start: {'on' if autostart else 'paused'}")
+    autofill = store.storage.get_setting("autofill", "1") == "1"
+    marked = sum(1 for t in store.tasks.values() if t.autofill and t.status.value == "pending")
+    print(f"auto-fill:  {'on' if autofill else 'off'} ({marked} waiting task"
+          f"{'s' if marked != 1 else ''} marked for it)")
     running = [a for a in store.assignments.values() if a.state == AssignmentState.RUNNING]
     planned = [a for a in store.assignments.values() if a.state == AssignmentState.PLANNED]
     print(f"running:    {len(running)}")

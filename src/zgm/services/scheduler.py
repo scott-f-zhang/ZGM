@@ -341,12 +341,25 @@ class AssignmentService:
         return Result(True, a)
 
     def shift(self, assignment_id: str, delta: int) -> Result:
-        """Move a planned assignment ``delta`` places earlier (<0) or later (>0)."""
-        order = self.planned()
-        idx = next((i for i, x in enumerate(order) if x.id == assignment_id), None)
-        if idx is None:
-            return Result(False, error="only planned assignments can be reordered")
-        return self.move(assignment_id, None, max(0, idx + delta))
+        """Move a planned assignment ``delta`` places earlier (<0) or later (>0)
+        among the work queued on its GPUs: past the neighbours it shares a GPU
+        with. Work on other GPUs keeps its place."""
+        res = Result(False, error="only planned assignments can be reordered")
+        for _ in range(abs(delta)):
+            order = self.planned()
+            idx = next((i for i, x in enumerate(order) if x.id == assignment_id), None)
+            if idx is None:
+                return res
+            mine = set(order[idx].gpu_ids)
+            near = [i for i, x in enumerate(order) if i != idx and mine & set(x.gpu_ids)
+                    and (i < idx if delta < 0 else i > idx)]
+            if not near:  # already first / last on its GPUs
+                return Result(True, order[idx])
+            # before the previous neighbour, or after the next one (indices without it)
+            res = self.move(assignment_id, None, near[-1] if delta < 0 else near[0])
+            if not res.ok:
+                return res
+        return res
 
     def unassign(self, assignment_id: str) -> Result:
         a = self.store.assignments.get(assignment_id)

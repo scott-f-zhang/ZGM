@@ -22,7 +22,7 @@ def _gpus(ids) -> str:
     return ",".join(str(g) for g in ids) if ids else "—"
 
 
-class TaskDetails(Static):
+class TaskDetails(Static, can_focus=True):
     def show(
         self,
         task: Task | None,

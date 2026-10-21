@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import statistics
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from rich.syntax import Syntax
@@ -15,7 +15,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Input, Static, Tree
 
-from ..models import ConfigNode, Origin, format_duration
+from ..models import AssignmentState, ConfigNode, Origin, format_duration
 from ..services import config_loader as cl
 from ..services.config_repo import MISSING
 from ..widgets.dialogs import FormScreen
@@ -28,6 +28,8 @@ ORIGIN_STYLE = {
     Origin.OVERRIDDEN: ("●", theme.WARN),
     Origin.NEW: ("✚", theme.OK),
 }
+
+TREE_MIN_WIDTH = 36  # the tree grows to fit its deepest label, up to max-width (app.tcss)
 
 
 class ConfigScreen(Screen):
@@ -81,6 +83,13 @@ class ConfigScreen(Screen):
         table.add_column("source", key="source")
         self.rebuild_tree()
         self.query_one(Tree).focus()
+        self.app.store.subscribe(self.refresh_last_run)
+
+    def on_unmount(self) -> None:
+        self.app.store.unsubscribe(self.refresh_last_run)
+
+    def on_screen_resume(self) -> None:
+        self.refresh_last_run()
 
     # helpers ---------------------------------------------------------------
     def node(self) -> ConfigNode | None:
@@ -103,11 +112,13 @@ class ConfigScreen(Screen):
         tree.clear()
         tree.border_title = box_title("configs", info=f"{self.repo.root.name}/")
         target = None
+        widest = 0
 
         def add(parent, node: ConfigNode, depth: int = 0) -> None:
-            nonlocal target
+            nonlocal target, widest
             kids = self.repo.children(node)
             label = self.tree_label(node)
+            widest = max(widest, (depth + 1) * tree.guide_depth + label.cell_len)
             if kids and depth < 20:
                 tn = parent.add(label, data=node.path, expand=True)
                 for k in sorted(kids, key=lambda n: n.name):
@@ -133,6 +144,8 @@ class ConfigScreen(Screen):
                 tn = tree.root.add_leaf(self.tree_label(n), data=n.path)
                 if n.path == self.current:
                     target = tn
+        # + borders and the scrollbar
+        tree.styles.width = max(TREE_MIN_WIDTH, widest + 4)
         if not self.repo.nodes:
             tree.root.add_leaf(Text(f"no *.yaml in {self.repo.root}", style="dim"))
         if target is None and tree.root.children and tree.root.children[0].data:
@@ -171,11 +184,13 @@ class ConfigScreen(Screen):
         table.clear()
         if node is None:
             table.border_title = box_title("parameters")
+            table.border_subtitle = ""
             self.refresh_preview()
             return
         dirty = " *" if node.dirty else ""
         table.border_title = box_title(
             "parameters", info=f"{self.repo.rel(node.path)}{dirty} · {self.estimate_text(node)}")
+        table.border_subtitle = self.last_run_text(node)
         if node.error:
             table.add_row(Text("error", style="red"), Text(node.error, style="red"), "", key="__error__")
         for key, value, prov in self.repo.params(node):
@@ -374,6 +389,46 @@ class ConfigScreen(Screen):
         n = len(past)
         return f"est. ~{format_duration(median)} ({n} run{'s' if n != 1 else ''})"
 
+    def last_run_text(self, node: ConfigNode) -> str:
+        """When this config last ran: the latest run of a task made from this file,
+        with the same parameters (a config that was moved or renamed), or with the
+        config's task name (parameters edited since)."""
+        if node.error:
+            return ""
+        store = self.app.store
+        meta = node.resolved.get(cl.SCHEDULER_KEY) or {}
+        fp = self.repo.params_fingerprint(node, int(meta.get("gpus", 1)))
+        name = str(meta.get("name", node.name))
+        tasks = {t.id: t for t in store.tasks.values()
+                 if t.config_path == str(node.path) or (t.fingerprint and t.fingerprint == fp)
+                 or t.name == name}
+        runs = [a for a in store.assignments.values() if a.task_id in tasks and a.actual_start]
+        if not runs:
+            queued = any(a.task_id in tasks and a.state == AssignmentState.PLANNED
+                         for a in store.assignments.values())
+            return "never run" + (" · queued" if queued else "")
+        a = max(runs, key=lambda a: a.actual_start)
+        when = a.actual_start.strftime("%m-%d %H:%M")
+        if a.state == AssignmentState.RUNNING:
+            text = f"running since {when} ({format_duration(datetime.now() - a.actual_start)})"
+        else:
+            took = f", {format_duration(a.actual_end - a.actual_start)}" if a.actual_end else ""
+            text = f"last run {when} · {a.state.value}{took}"
+        task = tasks[a.task_id]
+        if task.fingerprint != fp:
+            text += " · older parameters"
+        elif task.config_path != str(node.path) and task.name != name:
+            text += f" · as {task.name}"
+        if len(runs) > 1:
+            text += f" · {len(runs)} runs"
+        return text
+
+    def refresh_last_run(self) -> None:
+        """The store changed (a run started or ended): update the line, not the table."""
+        node = self.node()
+        if self.is_mounted and node is not None:
+            self.query_one(DataTable).border_subtitle = self.last_run_text(node)
+
     def action_rename(self) -> None:
         node = self.node()
         if node is None:
@@ -448,3 +503,5 @@ class ConfigScreen(Screen):
             self.filter_text = ""
             self.refresh_params()
             self.query_one(DataTable).focus()
+        else:
+            self.app.action_menu()

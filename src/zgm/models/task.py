@@ -69,6 +69,8 @@ class Task:
     fingerprint: str = ""
     estimate_runs: int = 0  # how many past runs the estimate is based on (not stored)
     launch: LaunchSpec | None = None  # how to start it; a bare command if not given
+    autofill: bool = False  # waiting: may be started on idle GPUs (see Executor.fill_idle)
+    priority: int = 0  # auto-fill takes higher first; equal ones oldest first
 
     def __post_init__(self) -> None:
         if self.required_gpus < 1:

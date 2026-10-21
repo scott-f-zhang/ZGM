@@ -145,7 +145,8 @@ class TaskStore:
     def assignments_for_task(self, task_id: str) -> list[Assignment]:
         return sorted(
             (a for a in self.assignments.values() if a.task_id == task_id),
-            key=lambda a: a.planned_start,
+            # queued work whose start is unknown (no run history) has no planned_start
+            key=lambda a: (a.planned_start is None, a.planned_start or datetime.min),
         )
 
     def active_assignment(self, task_id: str) -> Assignment | None:
