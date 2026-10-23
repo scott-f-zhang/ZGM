@@ -42,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "(default: logs/ next to the database)")
     p.add_argument("--card-width", type=int, default=24, metavar="N",
                    help="width of queued task cards on the timeline (min 12, default 24)")
+    p.add_argument("--idle-pause", type=float, default=10, metavar="MIN",
+                   help="stop redrawing after MIN minutes without a key or the mouse "
+                        "(any key resumes; the queue keeps running; 0 = never, default 10)")
     p.add_argument("--ray-address", default=None, help="Ray cluster address (default: local)")
     return p
 
@@ -94,6 +97,7 @@ def main(argv: list[str] | None = None) -> None:
         command_template=args.command_template,
         card_width=args.card_width,
         autostart=args.autostart,
+        idle_pause=args.idle_pause * 60,
     )
     app.run()
 

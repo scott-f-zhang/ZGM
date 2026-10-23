@@ -30,14 +30,64 @@ def config_label(node: ConfigNode) -> Text:
     return t
 
 
+_CHAINS: dict[Path, tuple[tuple, list[ConfigNode]]] = {}  # path -> (files' mtimes, chain)
+
+
+def _mtimes(nodes: list[ConfigNode]) -> tuple:
+    try:
+        return tuple(n.path.stat().st_mtime_ns for n in nodes)
+    except OSError:
+        return ()
+
+
 def chain(path: Path) -> list[ConfigNode]:
-    """``path`` and its first parents, the topmost first."""
+    """``path`` and its first parents, the topmost first. Kept while none of the
+    files changes: the details show it again on every selection."""
+    hit = _CHAINS.get(path)
+    if hit and hit[0] and hit[0] == _mtimes(hit[1]):
+        return hit[1]
+    nodes = _read_chain(path)
+    _CHAINS[path] = (_mtimes(nodes), nodes)
+    return nodes
+
+
+_NODES: dict[Path, tuple[int, ConfigNode]] = {}  # path -> (mtime, node); parents are shared
+
+
+def _light_node(path: Path) -> ConfigNode:
+    """A config's name, parents and whether it is broken: all the tree shows, so
+    nothing is resolved (``cl.load_node`` resolves every parent again)."""
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    hit = _NODES.get(path)
+    if hit and mtime is not None and hit[0] == mtime:
+        return hit[1]
+    node = _parse_node(path)
+    if mtime is not None:
+        _NODES[path] = (mtime, node)
+    return node
+
+
+def _parse_node(path: Path) -> ConfigNode:
+    node = ConfigNode(path=path)
+    try:
+        node.bases = cl.base_paths(path, cl.read_yaml(path))
+        missing = [b.name for b in node.bases if not b.exists()]
+        if missing:
+            node.error = f"base file not found: {', '.join(missing)}"
+    except Exception as e:  # YAML syntax errors etc.
+        node.error = f"{type(e).__name__}: {e}"
+    return node
+
+
+def _read_chain(path: Path) -> list[ConfigNode]:
     out: list[ConfigNode] = []
-    cache: dict = {}
     seen = set()
     while path not in seen and len(out) < MAX_DEPTH:
         seen.add(path)
-        node = cl.load_node(path, cache)
+        node = _light_node(path)
         out.append(node)
         if not node.bases or not node.bases[0].exists():
             break

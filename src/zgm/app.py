@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
+from textual import events
 from textual.app import App
 from textual.binding import Binding
 
@@ -50,6 +52,7 @@ class ZGMApp(App):
         stats_interval: float = 2.0,
         card_width: int = DEFAULT_CARD_WIDTH,
         autostart: bool | None = None,
+        idle_pause: float = 600.0,
     ) -> None:
         super().__init__()
         self.store = TaskStore(storage or SqliteStorage(":memory:"))
@@ -78,6 +81,11 @@ class ZGMApp(App):
             self.autostart = autostart
         self.stats_interval = stats_interval
         self.card_width = max(MIN_CARD_WIDTH, card_width)
+        # no key or mouse for this long (s; 0 = never): stop redrawing, so an idle
+        # TUI sends nothing to the terminal; the first key only wakes it
+        self.idle_pause = idle_pause
+        self._last_input = time.monotonic()
+        self.idle = False
         self.assignment_service.recompute()  # "now" moved since the plan was saved
 
     def action_menu(self) -> None:
@@ -184,7 +192,32 @@ class ZGMApp(App):
         if isinstance(screen, ScheduleScreen):
             screen.gpus_changed()
 
+    async def on_event(self, event: events.Event) -> None:
+        if isinstance(event, (events.Key, events.MouseDown, events.MouseScrollDown,
+                              events.MouseScrollUp, events.MouseMove)):
+            self._last_input = time.monotonic()
+            if self.idle:
+                self.wake()
+                if isinstance(event, (events.Key, events.MouseDown)):
+                    return  # it only wakes the view: no action from a key pressed blind
+        await super().on_event(event)
+
+    def wake(self) -> None:
+        self.idle = False
+        self.tick()
+        screen = self.screen
+        if isinstance(screen, ScheduleScreen) and screen.is_mounted:
+            screen.refresh_all()
+
     def tick(self) -> None:
+        if (not self.idle and self.idle_pause
+                and time.monotonic() - self._last_input > self.idle_pause):
+            self.idle = True
+            screen = self.screen
+            if isinstance(screen, ScheduleScreen) and screen.is_mounted:
+                screen.refresh_status()  # says so, once
+        if self.idle and self._runtime is None:
+            return  # only a viewer: nothing to run, nothing to show
         if self.store.sync():  # changed by another zgm (submit, daemon, another TUI)
             self.assignment_service.recompute()
         self.follow_cluster()
@@ -201,7 +234,7 @@ class ZGMApp(App):
             self._client_runtime()
         self.assignment_service.recompute(persist=False)  # queued starts follow "now"
         screen = self.screen
-        if isinstance(screen, ScheduleScreen) and screen.is_mounted:
+        if isinstance(screen, ScheduleScreen) and screen.is_mounted and not self.idle:
             screen.refresh_timeline()
             screen.refresh_cluster()
 

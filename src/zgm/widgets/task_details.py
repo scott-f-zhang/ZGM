@@ -39,6 +39,10 @@ class TaskDetails(Horizontal, can_focus=True):
         log: Path | None = None,
         blocked: set[int] | None = None,
     ) -> None:
+        shown = repr((task, assignments, str(note) if note else None, log, sorted(blocked or ())))
+        if shown == getattr(self, "_shown", None):  # shown again on every refresh
+            return
+        self._shown = shown
         info = self.query_one("#details-info", Static)
         self.query_one(ConfigChain).show(task.config_path if task else None)
         if task is None:

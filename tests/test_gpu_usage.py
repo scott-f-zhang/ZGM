@@ -165,6 +165,51 @@ def test_task_id_in_the_environment_marks_zgm_processes(store, running_task):
         stale.kill()
 
 
+def test_short_lived_outside_use_blocks_but_is_reported_only_if_it_lasts(store):
+    """An exiting process that no longer tells its task looks like another
+    program for a few seconds: block the GPU, but say so only if it stays."""
+    clock = [0.0]
+    devices = gpus(1)
+    watch = GPUWatch(Provider(), devices, report_after=30, clock=lambda: clock[0])
+    assert watch.refresh(store) == (set(), [])
+    other = sleeper()
+    try:
+        watch.provider.procs = {0: [GPUProcess(other.pid)]}
+        clock[0] = 5
+        assert watch.refresh(store) == ({0}, [])  # blocked, not reported yet
+        watch.provider.procs = {}
+        clock[0] = 10
+        assert watch.refresh(store) == (set(), [])  # gone: nothing to say
+
+        watch.provider.procs = {0: [GPUProcess(other.pid)]}
+        clock[0] = 20
+        watch.refresh(store)
+        clock[0] = 55
+        busy, changes = watch.refresh(store)
+        assert busy == {0} and "GPU 0 is in use outside zgm" in changes[0]
+        watch.provider.procs = {}
+        assert watch.refresh(store)[1] == ["GPU 0 is free of other programs again"]
+    finally:
+        other.kill()
+
+
+def test_an_ended_tasks_exiting_processes_block_quietly(store):
+    """Right after a run ends its vLLM engine may still hold the GPU for a few
+    seconds: the GPU waits, but that is not reported as another program."""
+    done = store.add_task(Task("done", "echo"))
+    leftover = sleeper({"ZGM_TASK_ID": done.id})
+    try:
+        devices = gpus(1)
+        watch = GPUWatch(Provider({0: [GPUProcess(leftover.pid)]}), devices)
+        busy, changes = watch.refresh(store)
+        assert busy == {0} and changes == []
+        watch.provider.procs = {}
+        busy, changes = watch.refresh(store)
+        assert busy == set() and changes == []
+    finally:
+        leftover.kill()
+
+
 def test_gpu_whose_processes_cannot_be_listed_is_reported_not_blocked(store):
     devices = gpus(2)
     busy, changes = GPUWatch(Provider(broken={1}), devices).refresh(store)

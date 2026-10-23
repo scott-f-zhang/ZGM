@@ -18,7 +18,7 @@ from . import theme
 GIB = 1024 ** 3
 LOW_DISK = 0.10  # free share under which the disk line turns red
 METER = 12
-EVERY = 5.0  # seconds between samples
+EVERY = 10.0  # seconds between samples (each one repaints the box)
 
 
 def disk_paths(state_dir: str | None) -> list[str]:
@@ -82,7 +82,9 @@ class HostPanel(Static, can_focus=True):
                        f"{du.free / GIB:.0f} GiB free · {mount_of(p)}",
                        bad=free < LOW_DISK)
         self.lines = len(text.split())
-        self.update(text)
+        if text != getattr(self, "_shown", None):  # update() re-lays out the screen
+            self._shown = text
+            self.update(text)
 
     @staticmethod
     def _line(text: Text, label: str, fraction: float, stops, note: str, bad: bool = False) -> None:

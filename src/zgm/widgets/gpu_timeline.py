@@ -268,7 +268,11 @@ class GPUTimeline(Vertical, can_focus=True):
                                   bg, fg, a.display_gpu_ids))
 
         self.axis.columns = dict(zip(self.cols, slots))
-        self.axis.refresh()
+        shown = (repr(self.axis.columns), st.zoom_index, st.past_offset, st.future_scroll,
+                 st.width, int(now.timestamp() // 60))
+        if shown != getattr(self.axis, "_shown", None):  # update_data runs on every tick
+            self.axis._shown = shown
+            self.axis.refresh()
         end_col = self.n_items if show_cursor and st.cursor_col == self.n_items else None
         ids = [r.gpu.id for r in self.rows]
         for i, row in enumerate(self.rows):

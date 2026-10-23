@@ -239,10 +239,14 @@ class ConfigScreen(Screen):
         preview.update(grid)
 
     # events ----------------------------------------------------------------
+    PARAMS_DELAY = 0.12  # s: moving through the tree redraws the tables once it stops
+
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
         if event.node.data and event.node.data != self.current:
             self.current = event.node.data
-            self.refresh_params()
+            if getattr(self, "_params_timer", None) is not None:
+                self._params_timer.stop()
+            self._params_timer = self.set_timer(self.PARAMS_DELAY, self.refresh_params)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         self.action_edit()

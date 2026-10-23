@@ -914,3 +914,41 @@ async def test_terse_cards_idle_count_and_keys_in_settings(config_dir):
         keys = " ".join(d for ds in sections.values() for d in ds)
         assert app.screen.query_one("#keys").display
         assert "unassign" in keys and "history: zoom in" in keys and "derive" in keys
+
+
+async def test_idle_view_stops_redrawing_and_the_first_key_only_wakes_it(config_dir):
+    import time
+
+    app = ZGMApp(mock_gpus=4, config_dir=config_dir, stats_interval=0, idle_pause=60)
+    app.store.add_task(task("a"))
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app._last_input = time.monotonic() - 61
+        app.tick()
+        assert app.idle and "IDLE" in str(app.screen.query_one("#status-line").render())
+        app.store.add_task(task("b"))  # changes while idle are not drawn
+        await pilot.pause()
+        assert len(app.screen.query(TaskCard)) == 1
+        await pilot.press("x")  # wakes; does not delete anything
+        await pilot.pause()
+        assert not app.idle and len(app.screen.query(TaskCard)) == 2
+        assert len(app.store.tasks) == 2
+        assert "IDLE" not in str(app.screen.query_one("#status-line").render())
+
+
+async def test_a_tui_that_runs_the_queue_keeps_running_it_while_idle(config_dir):
+    import time
+
+    from zgm.runtime.mock import MockRuntime
+
+    a = task("alpha")
+    app = make_app(config_dir, [a])
+    app.runtime = MockRuntime(speedup=1)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app._last_input = time.monotonic() - app.idle_pause - 1
+        app.tick()
+        assert app.idle
+        app.assignment_service.assign(a.id, [1])
+        app.tick()
+        assert app.store.tasks[a.id].status == TaskStatus.RUNNING
