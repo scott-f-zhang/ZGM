@@ -87,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", default=str(default_db_path()),
                    help="zgm database (default: %(default)s)")
     p.add_argument("--mock-gpus", type=int, default=None, metavar="N",
-                   help="use N fake GPUs instead of NVML (also: ZGM_MOCK_GPUS)")
+                   help="use N fake GPUs instead of real ones (also: ZGM_MOCK_GPUS)")
     return p
 
 

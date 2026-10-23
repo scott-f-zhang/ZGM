@@ -14,6 +14,7 @@ from .base import Backend, Group
 # name -> "module:Class"; a new backend is one more entry
 BACKENDS = {
     "slurm": "zgm.cluster.slurm:SlurmBackend",
+    "macs": "zgm.cluster.macs:MacsBackend",
 }
 
 __all__ = ["BACKENDS", "Backend", "Group", "backend", "configured"]

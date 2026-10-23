@@ -11,13 +11,13 @@ zgm queues jobs on the GPUs of **one machine**. It starts each job on the GPUs i
 3. **Pass `--python ABSOLUTE_PATH` or `--conda ENV` on every `zgm submit`.** Without them, zgm uses the environment the command runs in: an activated venv, else an activated conda env, else `python` on PATH, else zgm's own Python. An agent's shell rarely has the right one activated.
 4. **Use absolute paths** for `--python`, `-C` and `--config`. A relative `--python` is resolved against the task's working directory (`-C`), not the current directory.
 5. **Put `--` between zgm's options and the job's command line**: `zgm submit -g 2 -- train.py --lr 3e-4`.
-6. **Check `zgm daemon status` before relying on GPUs.** On a GPU machine, its `gpus:` line must end in `(NVML)`. If it says `mock GPUs`, the NVIDIA driver or NVML is not usable: jobs would get fake GPU ids. Stop and report this; don't submit.
+6. **Check `zgm daemon status` before relying on GPUs.** On a GPU machine, its `gpus:` line must end in `(NVML)` or `(Apple GPU)` (in cluster mode it ends in `(cluster: NAME)` instead). If it says `mock GPUs`, no GPU is usable: jobs would get fake GPU ids. Stop and report this; don't submit.
 7. **Don't delete or edit** `state.db`, `*.executor.lock`, `*.executor.json` or the files in `logs/` while anything is running. Stop jobs through zgm (see [Stop or remove a task](#stop-or-remove-a-task)), not by killing processes.
 8. `zgm daemon stop` stops the scheduler, **not** the jobs. Running jobs continue, and are picked up again by the next `zgm daemon start`.
 
 ## Install
 
-Requires Python ≥ 3.10. Real GPUs need an NVIDIA driver; zgm reads the GPUs through NVML (`nvidia-ml-py`, NVIDIA's binding to the driver's `libnvidia-ml`).
+Requires Python ≥ 3.10. Real NVIDIA GPUs need a driver; zgm reads them through NVML (`nvidia-ml-py`, NVIDIA's binding to the driver's `libnvidia-ml`). On Apple Silicon, zgm reads the one Metal GPU through `system_profiler` and `ioreg`; jobs use PyTorch's `mps` device.
 
 ```bash
 git clone <repo-url> zgm && cd zgm
@@ -138,7 +138,7 @@ See [Stop or remove a task](#stop-or-remove-a-task). Exit codes: 0 done, 1 nothi
 
 | command | prints | exit |
 |---|---|---|
-| `start [--runtime local\|ray\|mock] [--no-autostart] [--cluster slurm\|none] [--log-dir DIR]` | `started: ...` / `already running: ...` / `started (pid N); it takes over when a zgm TUI ... exits` | 0; 1 if it didn't come up (see `daemon.log`) |
+| `start [--runtime local\|ray\|mock] [--no-autostart] [--cluster NAME\|none] [--log-dir DIR]` | `started: ...` / `already running: ...` / `started (pid N); it takes over when a zgm TUI ... exits` | 0; 1 if it didn't come up (see `daemon.log`) |
 | `status` | queue, executor, `gpus:`, `auto-start:`, `auto-fill:`, running jobs (with log paths), queued count, GPUs used by other programs | 0 |
 | `stop` | `stopped (pid N); running tasks keep running` / `not running` | 0; 1 if a TUI (not a daemon) runs the queue, or the daemon didn't exit |
 | `run` | the daemon in the foreground, logging to stdout | 0 on Ctrl+C / SIGTERM |
@@ -169,7 +169,7 @@ daemon log: /home/me/.local/share/zgm/daemon.log
 
 ## Several hosts (cluster mode)
 
-One zgm queue can span several machines. A **backend** says which groups of GPUs exist (today: `slurm`, every running Slurm job of the user); zgm does the rest the same way for every backend. Off by default; it is a setting of the database:
+One zgm queue can span several machines. A **backend** says which groups of GPUs exist (today: `slurm`, every running Slurm job of the user; `macs`, a list of Apple Silicon Macs); zgm does the rest the same way for every backend. Off by default; it is a setting of the database:
 
 ```bash
 zgm check --cluster slurm            # 1. must end with "result: ready" (see below)
@@ -196,6 +196,8 @@ How it behaves:
 - A task that needs more GPUs than any usable host has is rejected (exit 2). `--hold` keeps it in the waiting list, to place later.
 
 Slurm specifics: a group is a running single-node job with GPUs; ssh to its node lands in that job (pam_slurm_adopt, which most clusters use to let users reach their nodes at all), so a task started there lives as long as that job, even after the daemon's own job ends. Not used, with a note: jobs on several nodes, and jobs on a node where the user has another running job.
+
+Macs specifics: `ZGM_MACS=mac-a,mac-b` (or one host per line in `$ZGM_HOME/macs`) is the fleet; set it in every zgm process that uses the database (like `--db`), or use the file; each Mac is one group with its one Apple GPU. A task's GPUs must be on one host, so a task uses one Mac; `-g 2` is rejected unless a Mac has two GPUs. macOS doesn't report per-process GPU use without root, so zgm can't tell when another program is using a Mac's GPU; it still serializes its own tasks there. Remote starts use `nohup` where `setsid` is absent (macOS).
 
 ## What the job's process gets
 
@@ -232,7 +234,8 @@ Everything lives next to the database, in the state dir: `$ZGM_HOME`, default `~
 |---|---|
 | `ZGM_HOME` | the state dir: database, logs, daemon log (default `~/.local/share/zgm`) |
 | `ZGM_SSH_OPTIONS` | extra `ssh` options for cluster mode, e.g. `-i ~/.ssh/cluster_key -o ProxyJump=gateway` |
-| `ZGM_MOCK_GPUS=N` | use N fake GPUs instead of NVML (testing only) |
+| `ZGM_MACS` | comma- or space-separated Macs for `--cluster macs` (else `$ZGM_HOME/macs`, one per line) |
+| `ZGM_MOCK_GPUS=N` | use N fake GPUs instead of NVML/Apple GPU (testing only) |
 | `ZGM_MOCK_EXTERNAL="1:9000,2:500:4321"` | with mock GPUs: pretend other programs use GPU 1 (9000 MiB) and GPU 2 (pid 4321, 500 MiB) |
 | `CONDA_EXE` | where conda is, if it is not on PATH or in `~/anaconda3`, `~/miniconda3`, `~/miniforge3` or `~/mambaforge` |
 | `VIRTUAL_ENV`, `CONDA_PREFIX` | the environment `zgm submit` uses when neither `--python` nor `--conda` is given |
@@ -241,7 +244,7 @@ Everything lives next to the database, in the state dir: `$ZGM_HOME`, default `~
 
 | symptom | cause | fix |
 |---|---|---|
-| `gpus: N mock GPUs` on a GPU machine | NVML not usable: no driver, or not visible in this container | fix the driver/container (`nvidia-smi` must work); don't submit |
+| `gpus: N mock GPUs` on a GPU machine | no usable GPU: NVML not usable (no driver, or not visible in this container), or not an Apple Silicon GPU | fix the driver/container (`nvidia-smi` must work), or use a Mac with an Apple GPU; don't submit |
 | submit exits 2: `python not found` | relative or wrong `--python` | absolute path to the interpreter (or the env directory) |
 | submit exits 2: `conda env 'x' could not be activated` | no such env, or conda not found | `conda env list`; set `CONDA_EXE` |
 | last line `nothing runs the queue yet` | no daemon | `zgm daemon start` |
@@ -272,8 +275,8 @@ Layout (`src/zgm/`):
 | `services/executor.py` | start / follow / stop runs. Shared by the daemon and the TUI. Only the lease holder calls `tick` |
 | `services/lease.py`, `filelock.py` | one executor per database |
 | `services/launcher.py` | `LaunchSpec` → argv/cwd/env (conda activation, `CUDA_VISIBLE_DEVICES`) |
-| `services/gpu_usage.py`, `gpu_discovery.py` | NVML/mock GPUs, and processes not started by zgm |
-| `cluster/` | cluster mode, optional: `base.py` (the `Backend` protocol and `Group`), `core.py` (backend-independent: `ClusterWatch`, `ClusterProvider`, `locate`), `transport.py` (local / ssh), `slurm.py` (the Slurm backend), `check.py` (`zgm check`) |
+| `services/gpu_usage.py`, `gpu_discovery.py` | NVML/Apple/mock GPUs, and processes not started by zgm |
+| `cluster/` | cluster mode, optional: `base.py` (the `Backend` protocol and `Group`), `core.py` (backend-independent: `ClusterWatch`, `ClusterProvider`, `locate`), `transport.py` (local / ssh), `slurm.py` and `macs.py` (backends), `check.py` (`zgm check`) |
 | `probe.py` | `python -m zgm.probe`: a host's GPUs and processes, as JSON |
 | `runtime/local.py` + `runner.py` | detached runs and their files; `ray_adapter.py`, `mock.py` |
 | `storage/sqlite.py` | schema, with automatic migration when `TABLES` changes (bump `SCHEMA_VERSION`) |

@@ -1,0 +1,15 @@
+# A one-GPU smoke test for an Apple Silicon Mac (PyTorch MPS).
+# The Python below is the conda base found on this machine; point it at your
+# own PyTorch environment if it differs.
+_scheduler_:
+  name: mps-smoke
+  gpus: 1
+  run:
+    cwd: ../mps               # relative to this file
+    python: /opt/homebrew/Caskroom/miniforge/base/bin/python
+    script: mps_smoke.py
+    args: [--steps, "20", --size, "1024"]
+
+experiment:
+  device: mps
+  purpose: check that zgm runs a job on the Mac's GPU

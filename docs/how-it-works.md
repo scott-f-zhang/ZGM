@@ -82,7 +82,7 @@ Before queueing, zgm builds the process once, so a missing script, working dir, 
 
 `--config FILE` takes the GPU count, name and `_scheduler_.run` block from the config. If you also give RUN, that runs instead, from the current directory, and can use `{config}` / `{path}`.
 
-A running zgm picks submitted tasks up within a couple of seconds: it reloads when another process writes to the database (SQLite `data_version`). Whoever runs the queue (the daemon, or a TUI with `--runtime local`) then starts them as their GPUs free up. The report's last line says who that is, or that nothing runs the queue yet. `zgm submit` and the TUI must use the same `--db` (the default is the same for both). Without NVML, both default to 4 mock GPUs; `ZGM_MOCK_GPUS` or `--mock-gpus` change that for both.
+A running zgm picks submitted tasks up within a couple of seconds: it reloads when another process writes to the database (SQLite `data_version`). Whoever runs the queue (the daemon, or a TUI with `--runtime local`) then starts them as their GPUs free up. The report's last line says who that is, or that nothing runs the queue yet. `zgm submit` and the TUI must use the same `--db` (the default is the same for both). Without NVML or an Apple GPU, both default to 4 mock GPUs; `ZGM_MOCK_GPUS` or `--mock-gpus` change that for both.
 
 ## GPUs used by other programs
 
@@ -106,6 +106,8 @@ Limits, from what NVML can see:
 - A program can still grab a GPU right after zgm checked. Nothing short of exclusive compute mode (`nvidia-smi -c EXCLUSIVE_PROCESS`) can reserve a GPU.
 
 With mock GPUs, `ZGM_MOCK_EXTERNAL="1:9000,2:500:4321"` simulates other programs: 9000 MiB on GPU 1, and pid 4321 using 500 MiB on GPU 2.
+
+**Apple Silicon.** macOS does not expose which processes use the GPU without root, so zgm cannot see another program's use there: it marks the Mac's GPU as one whose processes are unknown, and relies on its own queue to run one zgm task at a time on it. Memory is unified (the GPU shares the machine's RAM), so the label's total is the Mac's memory.
 
 ## Running in the background: the executor and detached runs
 
@@ -138,17 +140,17 @@ One zgm queue can span several machines. It is built in layers, so that supporti
 
 | layer | what it does | today | to add |
 |---|---|---|---|
-| **backend** (`cluster/<name>.py`) | which groups of GPUs exist now, and on which host | `slurm`: your running Slurm jobs | a class implementing `cluster.base.Backend`, one line in `cluster.BACKENDS` |
+| **backend** (`cluster/<name>.py`) | which groups of GPUs exist now, and on which host | `slurm`: your running Slurm jobs; `macs`: a list of Macs | a class implementing `cluster.base.Backend`, one line in `cluster.BACKENDS` |
 | **transport** (`cluster/transport.py`) | how a shell command runs on a host, non-interactively | `ssh`, `local` | a class with `host`, `argv(script)` and `run(script, timeout)` |
-| **GPU provider** (`services/gpu_discovery.py`) | a machine's GPUs and their processes, read on that machine | NVML, mock | a provider class (e.g. for non-NVIDIA GPUs) |
+| **GPU provider** (`services/gpu_discovery.py`) | a machine's GPUs and their processes, read on that machine | NVML, Apple (Metal), mock | another provider class |
 | **core** (`cluster/core.py`) | probing, zgm GPU ids, placement, groups that go away; the same for every backend | | nothing |
 
 `zgm daemon start --cluster slurm` turns it on for the database (`--cluster none` turns it off). Then:
 
-- **Groups.** The executor asks the backend for its groups (`backend.interval`; Slurm: every 30 s) and keeps them in the `gpu_groups` table. The dashboard shows them in a box at the top (right of the host box: CPU, memory and the disks of the state dir and home), titled with the backend's name, and `zgm daemon status` in its `cluster:` block.
+- **Groups.** The executor asks the backend for its groups (`backend.interval`; Slurm: every 30 s, Macs: every 60 s) and keeps them in the `gpu_groups` table. The dashboard shows them in a box at the top (right of the host box: CPU, memory and the disks of the state dir and home), titled with the backend's name, and `zgm daemon status` in its `cluster:` block.
 - **Probes.** Every 10 seconds the executor runs `python -m zgm.probe` on the host of each usable group, through its transport. The probe reads the GPUs there, and their processes, each with its `ZGM_TASK_ID` if it has one. The group the executor runs in is read in-process. Results go into the table, so TUIs and `zgm submit` never reach other hosts themselves.
 - **GPU ids.** The first time a group's probe works, its GPUs get the lowest free zgm ids, which they keep while the group is usable. A multi-GPU task always gets GPUs of one host; placement windows (`a`, `best_gpus`) stay within a host, and the timeline labels each row with its host.
-- **Tasks on another host** start there: the transport runs `setsid python -m zgm.runtime.runner --remote ...` on the host. A runner on another host can't be watched through a lock or pids, so it writes a heartbeat into `run.json` every 5 seconds (none for 60 seconds = gone), and stops the task itself when `<id>.cancel` appears. All of this goes through the state dir, which every host must see. The task gets `CUDA_VISIBLE_DEVICES` in that host's numbering, and none of the variables the backend says describe where zgm runs.
+- **Tasks on another host** start there: the transport runs `python -m zgm.runtime.runner --remote ...` on the host, detached with `setsid` or, where that is missing (macOS), `nohup`. A runner on another host can't be watched through a lock or pids, so it writes a heartbeat into `run.json` every 5 seconds (none for 60 seconds = gone), and stops the task itself when `<id>.cancel` appears. All of this goes through the state dir, which every host must see. The task gets `CUDA_VISIBLE_DEVICES` in that host's numbering, and none of the variables the backend says describe where zgm runs.
 - **Groups that go away.** Work queued on their GPUs goes back to the waiting queue; runs still there end as failed once their heartbeat stops; then the ids are free for the next group.
 
 ### Before you turn it on: `zgm check`
@@ -164,6 +166,10 @@ One zgm queue can span several machines. It is built in layers, so that supporti
 
 A group is one of your running, single-node Slurm jobs with GPUs; pending jobs are listed with Slurm's expected start and the reason they wait. Slurm clusters let users ssh to the nodes where they have a job through pam_slurm_adopt, which puts the ssh session into that job: the probe sees exactly the job's GPUs, numbered from 0, and a task started there lives as long as that job, even after the job zgm runs in has ended. Not used, with a note: jobs on several nodes, and jobs on a node where you have another running job (ssh would land in the newest of them, whose GPUs may be other ones).
 
+### The Macs backend
+
+Each Mac in the list is a group with its one Apple GPU. The list is `ZGM_MACS=mac-a,mac-b` (comma- or space-separated) or one host per line in `$ZGM_HOME/macs`. Hosts are reached by ssh, and all the requirements above apply: a shared state dir at the same path, zgm at the same Python path, and a passwordless login. This machine's own entry (its host name, short or long) is read without ssh. A task's GPUs must be on one host, so one task uses one Mac; a task asking for more GPUs than a single Mac has is rejected. Because macOS cannot attribute GPU use to processes, zgm serializes its own tasks on a Mac's GPU but cannot tell when another program is using it.
+
 Limits: logs from another host reach `zgm logs -f` with the shared filesystem's delay (NFS: a few seconds).
 
 ## Code layout
@@ -177,7 +183,7 @@ services/executor.py   start / follow / stop runs: shared by the daemon and the 
 services/lease.py      one executor per database (OS file lock)
 services/gpu_usage.py  GPUs used by other programs (NVML compute processes minus zgm's)
 cluster/               cluster mode: base (Backend, Group) · core (ClusterWatch, ClusterProvider)
-                       · transport (local, ssh) · slurm (a backend) · check (zgm check)
+                       · transport (local, ssh) · slurm, macs (backends) · check (zgm check)
 probe.py               python -m zgm.probe: a host's GPUs and processes, as JSON
 daemon.py              zgm daemon start|status|stop|run
 runtime/               Runtime protocol · LocalRuntime (+ runner.py) · MockRuntime · RayRuntime

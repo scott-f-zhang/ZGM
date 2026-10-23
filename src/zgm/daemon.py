@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--log-dir", default=None,
                         help="task logs (default: logs/ next to the database)")
         sp.add_argument("--mock-gpus", type=int, default=None, metavar="N",
-                        help="use N fake GPUs instead of NVML (also: ZGM_MOCK_GPUS)")
+                        help="use N fake GPUs instead of real ones (also: ZGM_MOCK_GPUS)")
         sp.add_argument("--interval", type=float, default=2.0, metavar="SECONDS",
                         help="how often to check runs and the queue (default: %(default)s)")
         sp.add_argument("--no-autostart", dest="autostart", action="store_const", const=False,

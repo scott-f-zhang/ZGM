@@ -128,8 +128,10 @@ def cancel_run(base: Path) -> None:
             deadline = time.monotonic() + 3
             while is_locked(_file(base, ".lock")) and time.monotonic() < deadline:
                 time.sleep(0.05)
-            os.killpg(pids[0], signal.SIGKILL)
-        except ProcessLookupError:
+            if is_locked(_file(base, ".lock")):
+                # macOS answers a dead group with EPERM, not ESRCH
+                os.killpg(pids[0], signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
             pass
     deadline = time.monotonic() + 5
     while is_locked(_file(base, ".lock")) and time.monotonic() < deadline:
@@ -226,8 +228,11 @@ class LocalRuntime:
         """Start the runner on the transport's host, detached there, so it lives
         as long as that host (or, with Slurm, that job) does."""
         runner = shlex.join([sys.executable, "-m", "zgm.runtime.runner", "--remote", str(base)])
-        # not "cd / && ... &": that backgrounds a subshell holding ssh's output open
-        script = f"cd / || exit 1; setsid {runner} </dev/null >>{shlex.quote(str(log))} 2>&1 &"
+        # not "cd / && ... &": that backgrounds a subshell holding ssh's output open.
+        # macOS has no setsid; nohup is enough there (and works on Linux too).
+        script = (f"cd / || exit 1; if command -v setsid >/dev/null 2>&1; then "
+                  f"setsid {runner} </dev/null >>{shlex.quote(str(log))} 2>&1 & else "
+                  f"nohup {runner} </dev/null >>{shlex.quote(str(log))} 2>&1 & fi")
         host = transport.host
         try:
             done = transport.run(script, timeout=60)

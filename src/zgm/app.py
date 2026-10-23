@@ -14,7 +14,7 @@ from .screens.schedule import ScheduleScreen
 from .screens.settings import SettingsScreen
 from .services.config_repo import DEFAULT_COMMAND_TEMPLATE, ConfigRepository
 from .services.executor import Executor
-from .services.gpu_discovery import MockGPUProvider
+from .services.gpu_discovery import provider_label
 from .services.gpu_usage import GPUWatch
 from .services.lease import ExecutorLease
 from .services.scheduler import AssignmentService
@@ -59,7 +59,7 @@ class ZGMApp(App):
         self.cluster_watch: ClusterWatch | None = None  # while this TUI runs the queue
         local = self.cluster.local if self.cluster else self.provider
         self.gpu_source = ((f"{self.cluster.backend.name} · " if self.cluster else "")
-                           + ("mock" if isinstance(local, MockGPUProvider) else "NVML"))
+                           + provider_label(local))
         self.gpus = self.provider.discover()
         self.assignment_service = AssignmentService(
             self.store, [g.id for g in self.gpus],

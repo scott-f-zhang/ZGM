@@ -1,9 +1,14 @@
-"""Discover NVIDIA GPUs via NVML, falling back to mock devices."""
+"""Discover NVIDIA GPUs via NVML or Apple GPUs via Metal, falling back to
+mock devices."""
 
 from __future__ import annotations
 
+import json
 import os
 import random
+import re
+import subprocess
+import sys
 
 from ..models import GPUDevice, GPUProcess
 
@@ -80,6 +85,83 @@ class NVMLProvider:
                 pass
 
 
+class AppleGPUProvider:
+    """The Apple Silicon GPU, read with ``system_profiler`` and ``ioreg``.
+
+    An Apple Silicon Mac has one GPU that shares system memory with the CPU, so
+    ``memory_total`` is the machine's RAM. ``ioreg``'s IOAccelerator statistics
+    give the GPU's use of it and its utilization. macOS does not expose which
+    processes use the GPU without root, so ``processes`` raises: zgm cannot
+    tell whether another program is using the GPU, and only serializes its own
+    jobs there.
+    """
+
+    kind = "apple"
+
+    def __init__(self, run=subprocess.run) -> None:
+        self.run = run
+
+    def _text(self, argv: list[str], timeout: float = 30) -> str:
+        done = self.run(argv, capture_output=True, text=True, timeout=timeout)
+        if done.returncode != 0:
+            detail = (done.stderr or done.stdout).strip() or f"exit code {done.returncode}"
+            raise RuntimeError(f"{argv[0]}: {detail}")
+        return done.stdout
+
+    def _names(self) -> list[str]:
+        data = json.loads(self._text(["system_profiler", "SPDisplaysDataType", "-json"]))
+        names: list[str] = []
+        for item in data.get("SPDisplaysDataType") or []:
+            name = item.get("_name") or item.get("sppci_model") or ""
+            # MPS only runs on Apple Silicon's own GPU, not on Intel/AMD cards
+            if name.startswith("Apple ") and name not in names:
+                names.append(name)
+        return names
+
+    def _memory_total(self) -> int:
+        return int(self._text(["sysctl", "-n", "hw.memsize"]).strip())
+
+    def _stats(self) -> tuple[int, int]:
+        """(used bytes, utilization percent) from IOAccelerator."""
+        text = self._text(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator", "-w0"])
+        blocks = re.findall(r'"PerformanceStatistics"\s*=\s*\{(.*?)\}', text, re.S)
+        if not blocks:
+            return 0, 0
+        values = {k: int(v) for k, v in re.findall(r'"([^"]+)"\s*=\s*(-?\d+)', blocks[0])}
+        used = values.get("In use system memory")
+        if used is None:
+            used = values.get("Alloc system memory", 0)
+        return used, values.get("Device Utilization %", 0)
+
+    def discover(self) -> list[GPUDevice]:
+        names = self._names()
+        if not names:
+            return []
+        total = self._memory_total()
+        used, util = self._stats()
+        return [GPUDevice(id=i, uuid=f"Apple-GPU-{i:04d}", name=name, memory_total=total,
+                          memory_used=used if i == 0 else 0,
+                          utilization=util if i == 0 else 0)
+                for i, name in enumerate(names)]
+
+    def processes(self, gpu_id: int) -> list[GPUProcess]:
+        raise NotImplementedError("macOS does not show per-process GPU use without root")
+
+    def sync(self, devices: list[GPUDevice]) -> bool:
+        self.refresh(devices)
+        return False
+
+    def refresh(self, devices: list[GPUDevice]) -> None:
+        if not devices:
+            return
+        try:
+            used, util = self._stats()
+        except Exception:
+            return
+        devices[0].memory_used = used
+        devices[0].utilization = util
+
+
 class MockGPUProvider:
     """Fake GPUs so the UI can be developed and tested without hardware."""
 
@@ -122,8 +204,9 @@ class MockGPUProvider:
             d.memory_used = max(0, min(d.memory_total, d.memory_used + delta))
 
 
-def make_provider(mock_count: int | None = None) -> NVMLProvider | MockGPUProvider:
-    """NVML if available and not overridden; otherwise mock GPUs.
+def make_provider(mock_count: int | None = None) -> (
+        NVMLProvider | AppleGPUProvider | MockGPUProvider):
+    """NVML or the Apple GPU if available and not overridden; otherwise mock GPUs.
 
     ``mock_count`` (or env ZGM_MOCK_GPUS) forces the mock provider.
     """
@@ -138,7 +221,23 @@ def make_provider(mock_count: int | None = None) -> NVMLProvider | MockGPUProvid
             return provider
     except Exception:  # ImportError, NVMLError (no driver / no GPU), ...
         pass
+    if sys.platform == "darwin":
+        try:
+            provider = AppleGPUProvider()
+            if provider.discover():
+                return provider
+        except Exception:  # no system_profiler/ioreg, no Apple Silicon GPU, ...
+            pass
     return MockGPUProvider(DEFAULT_MOCK_GPUS)
+
+
+def provider_label(provider) -> str:
+    """A short name for the GPU source, for the dashboard."""
+    if isinstance(provider, MockGPUProvider):
+        return "mock"
+    if getattr(provider, "kind", "") == "apple":
+        return "Apple GPU"
+    return "NVML"
 
 
 def describe_gpus(provider, gpus: list[GPUDevice]) -> str:
@@ -146,12 +245,15 @@ def describe_gpus(provider, gpus: list[GPUDevice]) -> str:
     if hasattr(provider, "describe"):  # cluster mode
         return provider.describe(gpus)
     if isinstance(provider, MockGPUProvider):
-        return (f"{len(gpus)} mock GPUs, not real devices (no NVIDIA driver/NVML found, "
-                "or --mock-gpus / ZGM_MOCK_GPUS set)")
+        return (f"{len(gpus)} mock GPUs, not real devices (no NVIDIA driver/NVML and no "
+                "Apple GPU found, or --mock-gpus / ZGM_MOCK_GPUS set)")
     counts: dict[str, int] = {}
     for g in gpus:
         counts[g.name] = counts.get(g.name, 0) + 1
-    return ", ".join(f"{n} x {name}" for name, n in counts.items()) + " (NVML)"
+    line = ", ".join(f"{n} x {name}" for name, n in counts.items())
+    if getattr(provider, "kind", "") == "apple":
+        return line + " (Apple GPU)"
+    return line + " (NVML)"
 
 
 def discover_gpus(mock_count: int | None = None) -> list[GPUDevice]:

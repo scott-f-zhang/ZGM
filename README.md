@@ -21,7 +21,7 @@ You have a few GPUs and a list of training runs. Put the runs in the queue, say 
 
 ## Install
 
-You need Python 3.10 or newer. For real GPUs you also need the NVIDIA driver; check that `nvidia-smi` works.
+You need Python 3.10 or newer. On a machine with NVIDIA GPUs, also install the NVIDIA driver and check that `nvidia-smi` works. An Apple Silicon Mac needs nothing extra: zgm reads its GPU through macOS (Metal), and jobs can use PyTorch's `mps` device.
 
 ```bash
 git clone <repo-url> zgm
@@ -76,7 +76,7 @@ Run `zgm` to open it. It has two pages: **schedule** (key `1`) and **configs** (
 
 The schedule page has these parts, top to bottom:
 
-- **host**: this machine's CPU, memory, and the disks of the state dir and the home directory (red when less than 10% is free: a full disk makes jobs and zgm fail). In cluster mode the groups of GPUs (e.g. your Slurm jobs) are listed beside it.
+- **host**: this machine's CPU, memory, and the disks of the state dir and the home directory (red when less than 10% is free: a full disk makes jobs and zgm fail). In cluster mode the groups of GPUs (e.g. your Slurm jobs or Macs) are listed beside it.
 - **queue**: jobs that are waiting to be given GPUs. New jobs land here when you add them without GPUs, and so do stopped or failed jobs. Jobs marked for auto-fill are on the left, the others (manual) on the right, each side sorted by priority, highest first.
 - **timeline**: one row per GPU, with its memory and load on the left. Left of the red line is history, drawn to scale. Right of it are the running jobs, side by side in one column, then the queue in the order the jobs will start (`#1` is next). A job using several GPUs spans several rows.
 - **details**: everything about the selected job. On the right, its config as the configs page's tree shows it, cut down to the config and its parents.
@@ -89,7 +89,7 @@ The bottom line shows the common keys; the settings page (`3`) lists them all.
 
 | key | what it does |
 |---|---|
-| `q` `d` `t` `s` | go to the queue / details / timeline / Slurm (cluster) panel |
+| `q` `d` `t` `s` | go to the queue / details / timeline / cluster panel |
 | `Tab` / `Shift+Tab` | go to the next / previous panel, top to bottom |
 | `f` | show the focused panel full screen, or back |
 | `a` | place the selected job on GPUs |
@@ -181,10 +181,10 @@ zgm --config-dir examples/configs --db demo.db --runtime local   # T on a config
 
 ## Good to know
 
-- **GPUs used by other programs.** zgm asks the NVIDIA driver which programs are computing on each GPU. If one isn't a zgm job, the GPU is marked in red on the timeline (`! other`) and nothing new starts there. Programs that only draw on screen (your desktop, a browser) don't count.
+- **GPUs used by other programs.** On NVIDIA, zgm asks the driver which programs are computing on each GPU. If one isn't a zgm job, the GPU is marked in red on the timeline (`! other`) and nothing new starts there. Programs that only draw on screen (your desktop, a browser) don't count. macOS doesn't expose per-process GPU use without root, so on a Mac zgm can only keep its own jobs from sharing a GPU; another program's use is not detected.
 - **Closing things.** Closing the dashboard or running `zgm daemon stop` doesn't stop your jobs. The next time zgm runs the queue, it picks them up and records how they ended.
-- **No NVIDIA GPU?** zgm then shows 4 pretend GPUs so you can try it out, and `zgm daemon status` says so. Jobs don't get real GPUs in that case.
-- **Several machines?** One queue can span several hosts; on a Slurm cluster, `zgm daemon start --cluster slurm` uses the GPUs of all your running jobs and adds a job's GPUs as soon as it starts. Run `zgm check --cluster slurm` first: it tests the shared directory and the login to each host. See [how it works](docs/how-it-works.md#several-hosts-cluster-mode).
+- **Apple Silicon Macs.** zgm uses the Mac's GPU as one device (unified memory), and jobs reach it through PyTorch's `mps` backend. On a Mac without an Apple GPU, or on any machine without a usable GPU, zgm shows 4 pretend GPUs so you can try it out, and `zgm daemon status` says so.
+- **Several machines?** One queue can span several hosts. On a Slurm cluster, `zgm daemon start --cluster slurm` uses the GPUs of all your running jobs and adds a job's GPUs as soon as it starts. Several Macs work the same way: `export ZGM_MACS=mac-a,mac-b` (or one host per line in `$ZGM_HOME/macs`), then `zgm daemon start --cluster macs`; this puts one GPU from each Mac in the queue (each task still runs on one Mac). Every host must mount the state dir at the same path and accept a passwordless ssh login. Run `zgm check --cluster slurm` or `zgm check --cluster macs` first. See [how it works](docs/how-it-works.md#several-hosts-cluster-mode).
 - **One queue per database.** The queue is kept in `~/.local/share/zgm/state.db` (or `$ZGM_HOME/state.db`). Pass `--db` to every command to use another one. On storage other users share, use a directory of your own, e.g. `ZGM_HOME=/shared/$USER/zgm`.
 - **Looks.** The dashboard uses your terminal's font and size. A modern terminal (Windows Terminal, iTerm2, kitty, ...) with a monospace font such as Cascadia Mono or JetBrains Mono, at least 100×30 characters, looks best.
 

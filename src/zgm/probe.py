@@ -40,12 +40,13 @@ def task_of(pid: int) -> str | None:
 
 
 def probe(provider=None) -> dict:
-    """``provider``: an NVML/mock provider to read (default: a new one, which must
-    see real GPUs unless ZGM_MOCK_GPUS asks for fake ones)."""
+    """``provider``: an NVML/Apple/mock provider to read (default: a new one, which
+    must see real GPUs unless ZGM_MOCK_GPUS asks for fake ones)."""
     if provider is None:
         provider = make_provider()
         if isinstance(provider, MockGPUProvider) and not os.environ.get("ZGM_MOCK_GPUS"):
-            raise RuntimeError("NVML is not usable here (no NVIDIA driver or no GPU visible)")
+            raise RuntimeError("no GPU is usable here (no NVIDIA driver/NVML and no "
+                               "Apple GPU visible)")
     gpus = []
     for g in provider.discover():
         entry = {"index": g.id, "uuid": g.uuid, "name": g.name, "memory_total": g.memory_total,

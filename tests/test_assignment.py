@@ -193,6 +193,7 @@ def test_gpu_discovery_falls_back_to_mock(monkeypatch):
 
     monkeypatch.delenv("ZGM_MOCK_GPUS", raising=False)
     monkeypatch.setattr(gpu_discovery, "NVMLProvider", boom)
+    monkeypatch.setattr(gpu_discovery, "AppleGPUProvider", boom)
     provider = make_provider()
     assert isinstance(provider, MockGPUProvider)
     assert [g.id for g in provider.discover()] == [0, 1, 2, 3]
