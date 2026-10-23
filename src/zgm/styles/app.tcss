@@ -20,19 +20,34 @@ Screen {
 
 /* ---------- Schedule view ---------- */
 #task-queue {
-    height: 8;
+    height: 9;
     border: round #556d59;          /* cpu_box */
     border-title-color: #556d59;
     border-subtitle-color: #556d59;
     border-subtitle-align: right;
     padding: 0 1;
-    scrollbar-size-horizontal: 1;
 }
 #task-queue:focus-within, #task-queue:focus {
     border: round #77ca9b;          /* cpu gradient start */
     border-title-color: #77ca9b;
 }
-#queue-empty {
+/* auto-fill (left) | manual (right), half each */
+.queue-half {
+    width: 1fr;
+    height: 1fr;
+}
+#queue-manual {
+    border-left: vkey #303030;      /* div_line */
+    padding-left: 1;
+}
+.queue-half-title {
+    height: 1;
+}
+.queue-strip {
+    height: 1fr;
+    scrollbar-size-horizontal: 1;
+}
+.queue-empty {
     color: #606060;
     padding: 1 2;
     width: auto;
@@ -68,6 +83,18 @@ TaskCard.-dragging {
     padding: 0 1;
 }
 
+/* details: the task (left) | its config and the config's parents (right) */
+#details-info {
+    width: 1fr;
+}
+#details-config {
+    width: 24;                      /* widened to fit its labels (config_chain.py) */
+    max-width: 40%;
+    background: #000000;
+    border-left: vkey #303030;      /* div_line */
+    padding-left: 1;
+}
+
 #gpu-timeline {
     height: 1fr;
     border: round #805252;          /* proc_box */
@@ -75,9 +102,19 @@ TaskCard.-dragging {
     border-subtitle-color: #805252;
     border-subtitle-align: right;
 }
+#top-row {
+    height: auto;                   /* set by ScheduleScreen.fit_top_row */
+}
+#host-panel {
+    width: 1fr;
+    height: 1fr;
+    border: round #556d59;          /* cpu_box */
+    border-title-color: #556d59;
+    padding: 0 1;
+}
 #cluster-panel {
-    height: auto;
-    max-height: 9;
+    width: 1fr;
+    height: 1fr;
     border: round #5c588d;          /* net_box */
     border-title-color: #5c588d;
     padding: 0 1;
@@ -141,7 +178,7 @@ GPURow {
 
 /* ---------- Settings view ---------- */
 #settings-box {
-    height: 1fr;
+    height: auto;
     border: round #5c588d;          /* net_box */
     border-title-color: #b0a9de;
     padding: 1 2;
@@ -165,6 +202,12 @@ GPURow {
 #settings-note {
     height: auto;
 }
+#keys-box {
+    height: 1fr;
+    border: round #5c588d;          /* net_box */
+    border-title-color: #b0a9de;
+    padding: 0 2;
+}
 
 /* ---------- panels: focus and full screen (f) ---------- */
 #queue-overview {
@@ -183,13 +226,13 @@ GPURow {
 #task-details.-zoomed {
     height: 1fr;
 }
+#host-panel:focus {
+    border: round #77ca9b;          /* cpu gradient start */
+    border-title-color: #77ca9b;
+}
 #cluster-panel:focus {
     border: round #b0a9de;
     border-title-color: #b0a9de;
-}
-#cluster-panel.-zoomed {
-    height: 1fr;
-    max-height: 100%;
 }
 
 /* dialogs: the view stays visible, dimmed, behind them (Screen's own black

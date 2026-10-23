@@ -118,7 +118,7 @@ async def test_reorder_with_brackets(config_dir):
         await pilot.pause()
         for t in tasks:
             app.assignment_service.assign(t.id, [0])
-        await pilot.press("tab")  # timeline; cursor on column 0
+        await pilot.press("t")  # timeline; cursor on column 0
         await pilot.press("right", "right")
         await pilot.press("left_square_bracket")
         await pilot.pause()
@@ -345,7 +345,7 @@ async def test_unassign_from_timeline(config_dir):
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         app.assignment_service.assign(a.id, [0])
-        await pilot.press("tab")  # focus timeline; cursor sits on the first card
+        await pilot.press("t")  # focus timeline; cursor sits on the first card
         await pilot.press("u")
         await pilot.pause()
         assert not app.store.assignments
@@ -509,7 +509,7 @@ async def test_mock_runtime_records_actual_times(config_dir):
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         asg = app.assignment_service.assign(a.id, [1]).assignment
-        await pilot.press("tab", "r")  # timeline cursor on the planned card
+        await pilot.press("t", "r")  # timeline cursor on the planned card
         assert app.store.tasks[a.id].status == TaskStatus.RUNNING
         app.poll_runs()
         assert asg.actual_end is not None and asg.actual_start is not None
@@ -546,7 +546,7 @@ async def test_rename_task_from_queue_and_timeline(config_dir):
         await pilot.press(*["backspace"] * 10, *"first", *["enter"] * 6)
         await pilot.pause()
         assert app.store.tasks[a.id].name == "first"
-        await pilot.press("tab", "e")  # timeline: beta's card
+        await pilot.press("t", "e")  # timeline: beta's card
         await pilot.pause()
         await pilot.press(*["backspace"] * 10, *"second", *["enter"] * 6)
         await pilot.pause()
@@ -561,7 +561,7 @@ async def test_edit_gpu_count_of_planned_task(config_dir):
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         app.assignment_service.assign(a.id, [1])
-        await pilot.press("tab", "e")
+        await pilot.press("t", "e")
         await pilot.pause()
         await pilot.press("enter", "backspace", "2", *["enter"] * 5)
         await pilot.pause()
@@ -575,7 +575,7 @@ async def _start_running(app, pilot, t):
     app.runtime = MockRuntime(speedup=1)  # stays running
     app.assignment_service.assign(t.id, [0])
     await pilot.pause()
-    await pilot.press("tab", "r")
+    await pilot.press("t", "r")
     await pilot.pause()
     assert app.store.tasks[t.id].status == TaskStatus.RUNNING
 
@@ -658,7 +658,7 @@ async def test_run_user_script_with_local_runtime(config_dir, tmp_path):
         await pilot.pause()
         app.assignment_service.assign(t.id, [2])
         await pilot.pause()
-        await pilot.press("tab", "r")
+        await pilot.press("t", "r")
         await pilot.pause()
         assert app.store.tasks[t.id].status == TaskStatus.RUNNING
         for _ in range(100):
@@ -684,7 +684,7 @@ async def test_run_reports_launch_errors(config_dir, tmp_path):
         await pilot.pause()
         app.assignment_service.assign(t.id, [0])
         await pilot.pause()
-        await pilot.press("tab", "r")
+        await pilot.press("t", "r")
         await pilot.pause()
         # nothing started: back in the waiting queue as failed, off the timeline
         assert app.store.tasks[t.id].status == TaskStatus.FAILED
@@ -814,3 +814,103 @@ def test_reordering_steps_over_work_on_the_same_gpus_only():
     assert svc.shift(ids["c0"], -1).ok and names()[0] == "c0"  # already first on GPU 0
     assert svc.shift(ids["b1"], 1).ok
     assert names() == ["c0", "a0", "d1", "b1"]
+
+
+async def test_host_panel_shows_cpu_memory_and_disk(config_dir):
+    from zgm.widgets.host_panel import HostPanel
+
+    app = make_app(config_dir)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        panel = app.screen.query_one(HostPanel)
+        text = str(panel.render())
+        assert panel.display and "host" in str(panel.border_title)
+        assert "CPU" in text and "MEM" in text and "DISK" in text and "GiB free" in text
+        await pilot.press("d", "f")  # another panel full screen: the row goes
+        assert not app.screen.query_one("#top-row").display
+        await pilot.press("escape")
+        assert app.screen.query_one("#top-row").display and panel.display
+
+
+async def test_queue_splits_autofill_and_manual_by_priority(config_dir):
+    tasks = [task("m-low"), task("a-low"), task("m-high"), task("a-high"), task("a-mid")]
+    for t in tasks:
+        t.autofill = t.name.startswith("a-")
+        t.priority = {"low": 0, "mid": 1, "high": 2}[t.name.split("-")[1]]
+    app = make_app(config_dir, tasks)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        names = lambda kind: [c.task_model.name for c in
+                              app.screen.query(f"#queue-{kind}-strip TaskCard")]
+        assert names("auto") == ["a-high", "a-mid", "a-low"]
+        assert names("manual") == ["m-high", "m-low"]
+        queue = app.screen.queue
+        assert [app.store.tasks[i].name for i in queue.order] == \
+            ["a-high", "a-mid", "a-low", "m-high", "m-low"]
+        queue.focus()
+        await pilot.press("end")
+        assert app.store.tasks[queue.selected_id].name == "m-low"
+
+        tasks[0].autofill = True  # m-low goes to the auto-fill half
+        app.store.update_task(tasks[0])
+        await pilot.pause()
+        assert names("auto") == ["a-high", "a-mid", "m-low", "a-low"]  # oldest first
+        assert names("manual") == ["m-high"]
+
+
+async def test_details_show_the_config_and_only_its_parents(config_dir, tmp_path):
+    from zgm.widgets.config_chain import ConfigChain
+
+    (tmp_path / "base.yaml").write_text("lr: 1\n")
+    (tmp_path / "mid.yaml").write_text("_base_: base.yaml\nlr: 2\n")
+    (tmp_path / "sibling.yaml").write_text("_base_: base.yaml\nlr: 3\n")
+    (tmp_path / "other.yaml").write_text("x: 1\n")
+    (tmp_path / "leaf.yaml").write_text("_base_: [mid.yaml, other.yaml]\nlr: 4\n")
+    t = task("a")
+    t.config_path = str(tmp_path / "leaf.yaml")
+    app = make_app(config_dir, [t])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        tree = app.screen.query_one(ConfigChain)
+        rows, node = [], tree.root
+        while node.children:
+            assert len(node.children) == 1  # no siblings anywhere
+            node = node.children[0]
+            rows.append(str(node.label))
+        assert rows == ["base", "mid", "leaf ⧉2"]
+
+
+async def test_tab_goes_through_every_panel(config_dir):
+    app = make_app(config_dir, [task("a")])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        seen = []
+        for i in range(5):
+            if i:
+                await pilot.press("tab")
+            seen.append(app.focused.id)
+        # no cluster here, so no cluster panel; then round again
+        assert seen == ["task-queue", "gpu-timeline", "task-details", "host-panel", "task-queue"]
+        await pilot.press("shift+tab")
+        assert app.focused.id == "host-panel"
+        await pilot.press("f")  # full screen follows Tab
+        assert app.screen.zoomed == "host"
+        await pilot.press("tab")
+        assert app.screen.zoomed == "queue" and app.focused.id != "host-panel"
+
+
+async def test_terse_cards_idle_count_and_keys_in_settings(config_dir):
+    a, b = task("a"), task("b")
+    b.status = TaskStatus.FAILED
+    app = make_app(config_dir, [a, b])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        cards = {c.task_model.name: str(c.render()) for c in app.screen.query(TaskCard)}
+        assert "pending" not in cards["a"] and "failed" in cards["b"]
+        assert "4 gpus · 4 idle" in str(app.screen.timeline.border_title)
+        await pilot.press("3")
+        await pilot.pause()
+        sections = dict((t, [b.description for b in bs]) for t, bs in app.screen.key_sections())
+        keys = " ".join(d for ds in sections.values() for d in ds)
+        assert app.screen.query_one("#keys").display
+        assert "unassign" in keys and "history: zoom in" in keys and "derive" in keys

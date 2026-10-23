@@ -18,6 +18,7 @@ from textual.widgets import DataTable, Footer, Input, Static, Tree
 from ..models import AssignmentState, ConfigNode, Origin, format_duration
 from ..services import config_loader as cl
 from ..services.config_repo import MISSING
+from ..widgets.config_chain import config_label
 from ..widgets.dialogs import FormScreen
 from ..widgets import theme
 from ..widgets.theme import box_title
@@ -156,15 +157,7 @@ class ConfigScreen(Screen):
         self.refresh_params()
 
     def tree_label(self, node: ConfigNode) -> Text:
-        t = Text()
-        if node.error:
-            t.append("⚠ ", style=f"bold {theme.BAD}")
-        t.append(node.name, style=theme.BAD if node.error else theme.MAIN_FG)
-        if len(node.bases) > 1:
-            t.append(f" ⧉{len(node.bases)}", style=theme.CACHED[1])
-        if node.dirty:
-            t.append(" *", style=f"bold {theme.WARN}")
-        return t
+        return config_label(node)
 
     def refresh_tree_labels(self) -> None:
         tree = self.query_one(Tree)

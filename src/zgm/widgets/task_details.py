@@ -1,4 +1,5 @@
-"""TaskDetails: full information about the selected task and its placement."""
+"""TaskDetails: full information about the selected task and its placement;
+on the right, the task's config with its parents (ConfigChain)."""
 
 from __future__ import annotations
 
@@ -7,9 +8,12 @@ from pathlib import Path
 
 from rich.table import Table
 from rich.text import Text
+from textual.app import ComposeResult
+from textual.containers import Horizontal
 from textual.widgets import Static
 
 from ..models import Assignment, AssignmentState, Task, format_estimate
+from .config_chain import ConfigChain
 from .palette import task_color
 from .task_card import STATUS_STYLE
 
@@ -22,7 +26,11 @@ def _gpus(ids) -> str:
     return ",".join(str(g) for g in ids) if ids else "—"
 
 
-class TaskDetails(Static, can_focus=True):
+class TaskDetails(Horizontal, can_focus=True):
+    def compose(self) -> ComposeResult:
+        yield Static(id="details-info")
+        yield ConfigChain(id="details-config")
+
     def show(
         self,
         task: Task | None,
@@ -31,8 +39,10 @@ class TaskDetails(Static, can_focus=True):
         log: Path | None = None,
         blocked: set[int] | None = None,
     ) -> None:
+        info = self.query_one("#details-info", Static)
+        self.query_one(ConfigChain).show(task.config_path if task else None)
         if task is None:
-            self.update(Text("No task selected.", style="dim"))
+            info.update(Text("No task selected.", style="dim"))
             return
         label, style = STATUS_STYLE[task.status]
         grid = Table.grid(padding=(0, 2), expand=True)
@@ -102,4 +112,4 @@ class TaskDetails(Static, can_focus=True):
             grid.add_row("Log", Text(str(log), overflow="fold"), "", "")
         if note:
             grid.add_row("", note if isinstance(note, Text) else Text(note), "", "")
-        self.update(grid)
+        info.update(grid)

@@ -106,7 +106,7 @@ class TimeAxis(Widget):
         width = max(0, self.size.width - LABEL_WIDTH)
         dim = Style(color=theme.SUBTLE)
         if y == 0:
-            head = f" history {st.minutes_per_cell}m/cell"
+            head = ""
         else:
             left, right = st.hidden_cols(len(self.columns))
             head = " queue" + (f" ◀{left}" if left else "") + (f" {right}▶" if right else "")
@@ -151,15 +151,15 @@ class TimeAxis(Widget):
 
 class GPUTimeline(Vertical, can_focus=True):
     BINDINGS = [
-        Binding("left", "cursor(-1)", "◀", show=False),
-        Binding("right", "cursor(1)", "▶", show=False),
-        Binding("up,k", "gpu(-1)", "gpu ↑", show=False),
-        Binding("down,j", "gpu(1)", "gpu ↓", show=False),
-        Binding("h", "pan(1)", "history ◀", show=False),
-        Binding("l", "pan(-1)", "history ▶", show=False),
-        Binding("plus,equals_sign,=", "zoom(-1)", "zoom in", show=False),
-        Binding("minus,-", "zoom(1)", "zoom out", show=False),
-        Binding("g", "now", "now"),
+        Binding("left", "cursor(-1)", "earlier in the queue", show=False),
+        Binding("right", "cursor(1)", "later in the queue", show=False),
+        Binding("up,k", "gpu(-1)", "GPU above", show=False),
+        Binding("down,j", "gpu(1)", "GPU below", show=False),
+        Binding("h", "pan(1)", "history: back", show=False),
+        Binding("l", "pan(-1)", "history: forward", show=False),
+        Binding("plus,equals_sign,=", "zoom(-1)", "history: zoom in", show=False),
+        Binding("minus,-", "zoom(1)", "history: zoom out", show=False),
+        Binding("g", "now", "back to now", show=False),
     ]
 
     class CursorMoved(Message):

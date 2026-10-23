@@ -181,7 +181,7 @@ async def test_no_dispatch_while_placing(config_dir):
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         queue(app, ("a", [0]))
-        await pilot.press("tab")  # timeline: cursor on a's card
+        await pilot.press("t")  # timeline: cursor on a's card
         await pilot.press("enter")  # pick it up
         await pilot.pause()
         assert app.screen.placement is not None

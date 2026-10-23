@@ -74,20 +74,23 @@ zgm stop train
 
 Run `zgm` to open it. It has two pages: **schedule** (key `1`) and **configs** (key `2`).
 
-The schedule page has three parts:
+The schedule page has these parts, top to bottom:
 
-- **queue**, at the top: jobs that are waiting to be given GPUs. New jobs land here when you add them without GPUs, and so do stopped or failed jobs.
-- **details**, in the middle: everything about the selected job.
-- **timeline**, at the bottom: one row per GPU, with its memory and load on the left. Left of the red line is history, drawn to scale. Right of it are the running jobs, side by side in one column, then the queue in the order the jobs will start (`#1` is next). A job using several GPUs spans several rows.
+- **host**: this machine's CPU, memory, and the disks of the state dir and the home directory (red when less than 10% is free: a full disk makes jobs and zgm fail). In cluster mode the groups of GPUs (e.g. your Slurm jobs) are listed beside it.
+- **queue**: jobs that are waiting to be given GPUs. New jobs land here when you add them without GPUs, and so do stopped or failed jobs. Jobs marked for auto-fill are on the left, the others (manual) on the right, each side sorted by priority, highest first.
+- **timeline**: one row per GPU, with its memory and load on the left. Left of the red line is history, drawn to scale. Right of it are the running jobs, side by side in one column, then the queue in the order the jobs will start (`#1` is next). A job using several GPUs spans several rows.
+- **details**: everything about the selected job. On the right, its config as the configs page's tree shows it, cut down to the config and its parents.
 
 To give a job GPUs, select it in the queue and press `a`. A preview shows where it would go. Move it with the arrow keys and press `Enter`, or drag the card with the mouse.
 
 ![Placing a job: the preview shows its place in line and its GPUs before you confirm](docs/images/placing.png)
 
+The bottom line shows the common keys; the settings page (`3`) lists them all.
+
 | key | what it does |
 |---|---|
 | `q` `d` `t` `s` | go to the queue / details / timeline / Slurm (cluster) panel |
-| `Tab` | switch between the queue and the timeline |
+| `Tab` / `Shift+Tab` | go to the next / previous panel, top to bottom |
 | `f` | show the focused panel full screen, or back |
 | `a` | place the selected job on GPUs |
 | `←` `→` / `↑` `↓` | while placing: move it earlier/later in line, or to other GPUs |

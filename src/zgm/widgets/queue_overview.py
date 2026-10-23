@@ -39,10 +39,10 @@ def config_group(task: Task, root: Path) -> str:
 
 class QueueOverview(OptionList):
     BINDINGS = [
-        Binding("space", "toggle", "auto-fill ⇄ manual"),
-        Binding("A", "toggle_group", "whole folder"),
-        Binding("plus,equals_sign", "priority(1)", "priority +"),
-        Binding("minus", "priority(-1)", "priority -"),
+        Binding("space", "toggle", "auto-fill ⇄ manual", show=False),
+        Binding("A", "toggle_group", "whole folder ⇄", show=False),
+        Binding("plus,equals_sign", "priority(1)", "priority +1", show=False),
+        Binding("minus", "priority(-1)", "priority -1", show=False),
     ]
 
     class SelectionChanged(Message):

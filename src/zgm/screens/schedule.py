@@ -1,16 +1,20 @@
-"""Schedule view: task queue (top), details (middle), GPU timeline (bottom), and
-in cluster mode the groups of GPUs (e.g. Slurm jobs) under it. Each panel is
-focused with its first letter and can be shown full screen (f); the full-screen
-queue lists the waiting tasks by section (auto-fill / manual) and config folder."""
+"""Schedule view, top to bottom: this machine's CPU, memory and disk, with, in
+cluster mode, the groups of GPUs (e.g. Slurm jobs) beside them; the task queue;
+the GPU timeline; the selected task's details. Tab goes through the panels in
+that order, and each is focused with its first letter and can be shown full
+screen (f); the full-screen queue lists the waiting tasks by section (auto-fill /
+manual) and config folder."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Footer, Static
 
@@ -23,6 +27,7 @@ from ..widgets.dialogs import ChoiceScreen, apply_task_edit, edit_task_form, new
 from ..widgets.gpu_row import GPURow
 from ..widgets.gpu_timeline import GPUTimeline, pack_columns, queue_position, slot_columns
 from ..widgets.cluster_panel import ClusterPanel
+from ..widgets.host_panel import HostPanel
 from ..widgets.task_card import TaskCard
 from ..widgets.task_details import TaskDetails
 from ..widgets.queue_overview import QueueOverview
@@ -54,16 +59,17 @@ class ScheduleScreen(Screen):
         Binding("a", "place", "assign"),
         Binding("enter", "confirm", "confirm/pick", show=False),
         Binding("escape", "cancel", "cancel", show=False),
-        Binding("u,delete", "unassign", "unassign"),
+        Binding("u,delete", "unassign", "unassign", show=False),
         Binding("left_square_bracket,shift+left", "shift(-1)", "earlier", show=False),
         Binding("right_square_bracket,shift+right", "shift(1)", "later", show=False),
         Binding("n", "new_task", "new task"),
-        Binding("e", "edit_task", "edit/rename"),
-        Binding("x", "delete_task", "delete task"),
+        Binding("e", "edit_task", "edit/rename", show=False),
+        Binding("x", "delete_task", "delete task", show=False),
         Binding("r", "run", "run now", show=False),
-        Binding("p", "toggle_autostart", "auto-start"),
+        Binding("p", "toggle_autostart", "pause/resume auto-start", show=False),
         Binding("K", "stop", "stop"),
-        Binding("tab", "toggle_focus", "queue⇄timeline"),
+        Binding("tab", "cycle_focus(1)", "next panel"),
+        Binding("shift+tab", "cycle_focus(-1)", "previous panel", show=False),
         Binding("f", "toggle_zoom", "full screen"),
         Binding("q", "focus_panel('queue')", "queue", show=False),
         Binding("d", "focus_panel('details')", "details", show=False),
@@ -71,8 +77,11 @@ class ScheduleScreen(Screen):
         Binding("s", "focus_panel('cluster')", "cluster", show=False),
     ]
     # panel -> its widget; each is focused with the first letter of its title
-    PANELS = {"queue": "#task-queue", "details": "#task-details",
-              "timeline": "#gpu-timeline", "cluster": "#cluster-panel"}
+    # (Tab goes through them in this order)
+    PANELS = {"host": "#host-panel", "cluster": "#cluster-panel", "queue": "#task-queue",
+              "timeline": "#gpu-timeline", "details": "#task-details"}
+
+    TOP_LINES = 7  # content lines of the host and cluster boxes, at most
 
     def __init__(self, **kw) -> None:
         super().__init__(**kw)
@@ -92,9 +101,12 @@ class ScheduleScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield ViewTabs("schedule", id="view-tabs")
+        path = self.store.storage.path
+        with Horizontal(id="top-row"):
+            yield HostPanel(None if path == ":memory:" else str(Path(path).parent), id="host-panel")
+            yield ClusterPanel(id="cluster-panel")
         queue = TaskQueue(id="task-queue")
-        queue.border_title = box_title("queue", key="q", info="waiting tasks")
-        queue.border_subtitle = box_footer("a assign · n new · x delete · f full screen")
+        queue.border_title = box_title("queue", key="q")
         yield queue
         overview = QueueOverview(id="queue-overview")
         overview.border_title = box_title("queue", key="q", info="waiting tasks by config folder")
@@ -102,13 +114,12 @@ class ScheduleScreen(Screen):
             "space auto-fill ⇄ manual · A whole folder · +/- priority · a assign · f back")
         overview.display = False
         yield overview
-        details = TaskDetails(id="task-details")
-        details.border_title = box_title("details", key="d")
-        yield details
         timeline = GPUTimeline(self.app.gpus, card_width=self.app.card_width, id="gpu-timeline")
         timeline.border_subtitle = box_footer("history to scale ┃ now ┃ queue in order")
         yield timeline
-        yield ClusterPanel(id="cluster-panel")
+        details = TaskDetails(id="task-details")
+        details.border_title = box_title("details", key="d")
+        yield details
         yield Static("", id="status-line")
         yield Footer()
 
@@ -133,9 +144,13 @@ class ScheduleScreen(Screen):
         self.queue.focus()
 
     def retitle_timeline(self) -> None:
-        n = len(self.app.gpus)
+        """``N gpus · M idle``: idle = nothing of zgm's and no other program on it."""
+        ids = {g.id for g in self.app.gpus}
+        busy = {g for a in self.svc.running() for g in a.display_gpu_ids} | self.svc.blocked
+        n = len(ids)
         self.timeline.border_title = box_title(
-            "timeline", key="t", info=f"{n} gpu{'s' if n != 1 else ''} · {self.app.gpu_source}")
+            "timeline", key="t",
+            info=f"{n} gpu{'s' if n != 1 else ''} · {len(ids - busy)} idle · {self.app.gpu_source}")
 
     def gpus_changed(self) -> None:
         """Cluster mode: a group's GPUs came or went."""
@@ -146,12 +161,26 @@ class ScheduleScreen(Screen):
         self.refresh_all()
 
     def refresh_cluster(self) -> None:
+        """The top row: this machine's load, and the cluster's groups."""
+        self.query_one(HostPanel).sample()
         cluster = self.app.cluster
         panels = self.query(ClusterPanel)
         if cluster is not None and panels:
             panel = panels.first()
             panel.hidden_by_zoom = self.zoomed not in (None, "cluster")
             panel.show(cluster)
+        self.fit_top_row()
+
+    def fit_top_row(self) -> None:
+        """Host and cluster boxes side by side, half the width each, both as
+        tall as the taller one's content (at most TOP_LINES lines)."""
+        row = self.query_one("#top-row")
+        if self.zoomed in ("host", "cluster"):
+            row.styles.height = "1fr"
+            return
+        cluster = self.query_one(ClusterPanel)
+        lines = max(self.query_one(HostPanel).lines, cluster.lines if cluster.display else 0)
+        row.styles.height = min(lines, self.TOP_LINES) + 2  # + the border
 
     def on_unmount(self) -> None:
         self.store.unsubscribe(self.refresh_all)
@@ -191,6 +220,7 @@ class ScheduleScreen(Screen):
             ghost_note=note,
             show_cursor=self.placement is None and self.focused is tl,
         )
+        self.retitle_timeline()
         self.refresh_status()
 
     def selected_task(self) -> Task | None:
@@ -246,15 +276,12 @@ class ScheduleScreen(Screen):
                     msg.append(" PAUSED ‖ ", style=badge(theme.WARN))
                 who = (f"{info.get('runtime')} runtime" if self.app.is_executor
                        else f"run by {describe(info)}")
-                msg.append(f" {who}  ", style=theme.SUBTLE)
-                msg.append_text(hints([("p", "pause"), ("r", "run now"), ("K", "stop")]))
+                msg.append(f" {who}", style=theme.SUBTLE)
             else:
                 msg.append(" PLAN ONLY ", style=badge(theme.INACTIVE_FG, theme.MAIN_FG))
                 msg.append(" nothing runs: zgm daemon start", style=theme.SUBTLE)
             msg.append("   ")
-            msg.append_text(hints([("q d t s", "focus"), ("f", "full screen"),
-                                   ("Enter", "pick up"), ("[ ]", "reorder"), ("u", "unassign"),
-                                   ("e", "edit"), ("h/l +/-", "history"), ("Esc", "menu")]))
+            msg.append_text(hints([("Esc", "menu"), ("3", "all keys")]))
         self.query_one("#status-line", Static).update(msg)
 
     # placement -------------------------------------------------------------
@@ -447,6 +474,8 @@ class ScheduleScreen(Screen):
                 w.display = name is None
             else:
                 w.display = name in (None, pname)
+        self.query_one("#top-row").display = name in (None, "host", "cluster")
+        self.fit_top_row()
         self.overview.display = name == "queue"
         if name == "queue":
             self.refresh_overview()
@@ -543,11 +572,12 @@ class ScheduleScreen(Screen):
         self.svc.recompute()
         self.notify(f"Deleted {task.name}")
 
-    def action_toggle_focus(self) -> None:
-        if self.focused is self.timeline:
-            self.queue.focus()
-        else:
-            self.timeline.focus()
+    def action_cycle_focus(self, step: int) -> None:
+        """Tab / Shift+Tab: the next / previous panel (in full screen, it follows)."""
+        names = [n for n in self.PANELS if self.panel_available(n)]
+        here = self.focused_panel()
+        i = names.index(here) if here in names else -step
+        self.action_focus_panel(names[(i + step) % len(names)])
 
     def action_run(self) -> None:
         self.app.run_selected(self.current_task())

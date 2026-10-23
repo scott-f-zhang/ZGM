@@ -18,6 +18,7 @@ STALE = 120  # seconds: older data means no executor follows the groups any more
 
 class ClusterPanel(Static, can_focus=True):
     has_groups = False
+    lines = 0  # content lines shown
     hidden_by_zoom = False  # another panel is full screen
     hotkey = "s"  # ScheduleScreen focuses it with this key
 
@@ -25,6 +26,7 @@ class ClusterPanel(Static, can_focus=True):
         """``provider``: the app's ClusterProvider."""
         table = provider.table()
         self.has_groups = bool(table)
+        self.lines = len(table)
         self.display = bool(table) and not self.hidden_by_zoom
         if not table:
             return
