@@ -413,7 +413,13 @@ class GPUTimeline(Vertical, can_focus=True):
             past = blocks
             end_col = None
 
-        self.axis.refresh()
+        shown = (st.view, repr(self.axis.columns), repr(self.axis.labels),
+                 st.zoom_index, st.time_pan, st.future_scroll, st.width,
+                 st.tail_width, st.now_col, self.axis.n_cols,
+                 int(now.timestamp() // 60))
+        if shown != getattr(self.axis, "_shown", None):
+            self.axis._shown = shown
+            self.axis.refresh()
         ids = [r.gpu.id for r in self.rows]
         for i, row in enumerate(self.rows):
             row.set_data(

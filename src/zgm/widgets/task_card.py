@@ -57,7 +57,11 @@ class TaskCard(Widget):
     def update_task(self, task: Task) -> None:
         self.task_model = task
         self.set_class(task.status != TaskStatus.PENDING, "-scheduled")
-        self.refresh()
+        shown = (task.name, task.status, task.required_gpus, format_estimate(task),
+                 task.estimated_duration is not None, task.priority, bool(task.config_path))
+        if shown != getattr(self, "_shown", None):  # the queue updates every card often
+            self._shown = shown
+            self.refresh()
 
     def on_mount(self) -> None:
         self.update_task(self.task_model)

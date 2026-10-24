@@ -90,6 +90,8 @@ To give a job GPUs, select it in the queue and press `a`. A preview shows where 
 
 The bottom line shows the common keys; the settings page (`3`) lists them all.
 
+After 10 minutes without a key or the mouse the view stops redrawing (`IDLE` at the bottom), so an unattended dashboard sends nothing to the terminal; the next key only wakes it. Jobs keep running and starting meanwhile. Change the delay with `zgm --idle-pause MIN` (`0` turns it off).
+
 | key | what it does |
 |---|---|
 | `q` `d` `t` `s` | go to the queue / details / timeline / cluster panel |

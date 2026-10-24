@@ -70,17 +70,17 @@ class TaskQueue(Horizontal, can_focus=True):
                 empty.remove()
             elif not empty:
                 strip.mount(Static(EMPTY[kind], classes="queue-empty"))
-            prev = None
             for t in half:
                 card = cards.get(t.id)
                 if card is None:
-                    card = cards[t.id] = TaskCard(t)
-                    strip.mount(card)
+                    cards[t.id] = TaskCard(t)
+                    strip.mount(cards[t.id])
                 else:
                     card.update_task(t)
-                if prev is not None:  # keep DOM order in sync with the sorted order
-                    strip.move_child(card, after=prev)
-                prev = card
+            # keep DOM order in sync with the sorted order (each move re-lays out the strip)
+            if [c.task_model.id for c in strip.query(TaskCard)] != [t.id for t in half]:
+                for prev, t in zip(half, half[1:]):
+                    strip.move_child(cards[t.id], after=cards[prev.id])
         for tid, card in cards.items():
             if tid not in ids:
                 card.remove()
@@ -92,7 +92,10 @@ class TaskQueue(Horizontal, can_focus=True):
 
     def _title(self, kind: str, half: list[Task]) -> None:
         title = self.query_one(f"#queue-{kind}-title", Static)
-        title.update(f"[b {theme.TITLE}]{HALVES[kind]}[/] [{theme.SUBTLE}]{len(half)}[/]")
+        text = f"[b {theme.TITLE}]{HALVES[kind]}[/] [{theme.SUBTLE}]{len(half)}[/]"
+        if getattr(title, "_text", None) != text:  # update() re-lays out the queue
+            title.update(text)
+            title._text = text
 
     def select(self, task_id: str | None) -> None:
         changed = task_id != self.selected_id

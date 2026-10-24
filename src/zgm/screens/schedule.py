@@ -157,9 +157,11 @@ class ScheduleScreen(Screen):
         ids = {g.id for g in self.app.gpus}
         busy = {g for a in self.svc.running() for g in a.display_gpu_ids} | self.svc.blocked
         n = len(ids)
-        self.timeline.border_title = box_title(
+        title = box_title(
             "timeline", key="t",
             info=f"{n} gpu{'s' if n != 1 else ''} · {len(ids - busy)} idle · {self.app.gpu_source}")
+        if getattr(self.timeline, "_title", None) != title:  # setting it repaints the timeline
+            self.timeline.border_title = self.timeline._title = title
 
     def gpus_changed(self) -> None:
         """Cluster mode: a group's GPUs came or went."""
@@ -198,7 +200,7 @@ class ScheduleScreen(Screen):
         self.refresh_all()
 
     def refresh_all(self) -> None:
-        if not self.is_mounted:
+        if not self.is_mounted or self.app.idle:
             return
         self.queue.set_tasks(self.store.waiting_tasks())
         if self.zoomed == "queue":
@@ -262,7 +264,11 @@ class ScheduleScreen(Screen):
     def refresh_status(self) -> None:
         msg = Text()
         p = self.preview
-        if self.placement and p:
+        if self.app.idle:
+            msg.append(" IDLE ", style=badge(theme.INACTIVE_FG, theme.MAIN_FG))
+            msg.append(f" view paused after {self.app.idle_pause / 60:g} min without input; "
+                       "any key resumes (the queue keeps running)", style=theme.SUBTLE)
+        elif self.placement and p:
             task = self.store.tasks.get(self.placement.task_id)
             ok = p.result.ok
             msg.append(" PLACING ", style=badge(theme.OK if ok else theme.BAD))
@@ -291,7 +297,9 @@ class ScheduleScreen(Screen):
                 msg.append(" nothing runs: zgm daemon start", style=theme.SUBTLE)
             msg.append("   ")
             msg.append_text(hints([("Esc", "menu"), ("3", "all keys")]))
-        self.query_one("#status-line", Static).update(msg)
+        if msg != getattr(self, "_status", None):  # refreshed on every tick
+            self._status = msg
+            self.query_one("#status-line", Static).update(msg)
 
     # placement -------------------------------------------------------------
     def _base_len(self) -> int:

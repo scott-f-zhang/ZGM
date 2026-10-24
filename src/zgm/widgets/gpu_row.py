@@ -15,6 +15,7 @@ from rich.segment import Segment
 from rich.style import Style
 from textual import events
 from textual.message import Message
+from textual.geometry import Region
 from textual.strip import Strip
 from textual.widget import Widget
 
@@ -120,7 +121,21 @@ class GPURow(Widget):
         self.end_slot_col = end_slot_col
         self.show_cursor = show_cursor
         self.styles.height = self.needed_height()
-        self.refresh()
+        # update_data runs on every tick: repaint only what changed, the GPU's meters
+        # on the left most often (they alone change between most ticks)
+        g, st = self.gpu, self.state
+        body = (repr(self.cards), repr(self.past), prev_gpu, next_gpu, end_slot_col,
+                st.view, st.zoom_index, st.time_pan, st.future_scroll, st.tail_width,
+                st.now_col, st.width, st.cursor_gpu, st.cursor_x, st.cursor_zone,
+                self.show_cursor,
+                int(st.now.timestamp() // 60))  # the grid moves with the clock
+        label = (g.host, g.memory_used, g.memory_total, g.utilization, repr(g.external),
+                 st.cursor_gpu)
+        if body != getattr(self, "_body", None) or self.size.height != self.needed_height():
+            self.refresh()
+        elif label != getattr(self, "_label", None):
+            self.refresh(Region(0, 0, LABEL_WIDTH, self.size.height))
+        self._body, self._label = body, label
 
     def shows_content(self, card: Card) -> bool:
         """Text goes on the top row of each contiguous run of a card's rows."""
@@ -299,7 +314,7 @@ class GPURow(Widget):
                 self.post_message(self.BlockDragMove(self._press[2], event.screen_x, event.screen_y))
             return
         hit = self.state.hit(self.column_at(event.screen_x))
-        if hit.zone in ("future", "past"):
+        if hit.zone == "future":
             self.post_message(self.Hover(self.gpu.id, hit))
 
     def on_mouse_down(self, event: events.MouseDown) -> None:

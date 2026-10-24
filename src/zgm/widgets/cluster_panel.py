@@ -48,5 +48,9 @@ class ClusterPanel(Static, can_focus=True):
             info += f" · as of {seen[11:16]}"
             if (datetime.now() - datetime.fromisoformat(seen)).total_seconds() > STALE:
                 info += " · not updated: no executor follows them"
-        self.border_title = theme.box_title(provider.backend.name, key=self.hotkey, info=info)
-        self.update(text)
+        title = theme.box_title(provider.backend.name, key=self.hotkey, info=info)
+        if getattr(self, "_title", None) != title:  # setting it repaints the box
+            self.border_title = self._title = title
+        if text != getattr(self, "_shown", None):  # update() re-lays out the screen
+            self._shown = text
+            self.update(text)
