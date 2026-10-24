@@ -13,6 +13,15 @@ Whoever runs the queue (see [Running in the background](#running-in-the-backgrou
 - Nothing starts while you are placing or dragging a card.
 - Nothing starts on a GPU that another program is using; see [GPUs used by other programs](#gpus-used-by-other-programs).
 
+## Two timeline views
+
+The timeline (`t`, then `v` to switch) shows the same work in two ways:
+
+- **time**: one continuous axis. Finished runs use their actual start and end, running work uses its actual start and estimated end, and queued work uses its estimated start and end, so the future is drawn where it will happen. `+` / `-` change the scale and `h` / `l` pan; `g` returns to now. Queued work whose start is unknown (no run history, or behind such a run) cannot be placed on the axis, so it waits in a fixed-width `start unknown` tail at the right.
+- **tasks**: fixed-width cards for the last 200 finished runs, then running and queued work, with a `now` boundary between them. A one-second run gets the same readable card as a one-hour run. `h` / `l` scroll the cards.
+
+Both views accept placements and drags. In the card view the drop point selects a queue position directly. In the time view it selects the nearest insertion point on that GPU's timeline; the ghost then shows the estimated interval, which can differ from the drop time because the queue's order (and its estimates) decide when a job really starts. Dropping on finished history is not a placement.
+
 ## Estimates come only from run history
 
 You never type in how long a task takes. A task's estimate is the **median duration of earlier completed runs of the same workload**:

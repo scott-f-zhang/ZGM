@@ -78,7 +78,10 @@ The schedule page has these parts, top to bottom:
 
 - **host**: this machine's CPU, memory, and the disks of the state dir and the home directory (red when less than 10% is free: a full disk makes jobs and zgm fail). In cluster mode the groups of GPUs (e.g. your Slurm jobs or Macs) are listed beside it.
 - **queue**: jobs that are waiting to be given GPUs. New jobs land here when you add them without GPUs, and so do stopped or failed jobs. Jobs marked for auto-fill are on the left, the others (manual) on the right, each side sorted by priority, highest first.
-- **timeline**: one row per GPU, with its memory and load on the left. Left of the red line is history, drawn to scale. Right of it are the running jobs, side by side in one column, then the queue in the order the jobs will start (`#1` is next). A job using several GPUs spans several rows.
+- **timeline**: one row per GPU, with its memory and load on the left. It has two views, switched with `v`:
+  - **time**: the whole strip is to scale. History uses actual times; running and queued jobs use their estimates, so their blocks sit where they will run. Queued jobs with no estimate cannot be placed on the axis and wait in a `start unknown` tail on the right. The red line is now.
+  - **tasks**: one fixed-width card per run, in order: the last 200 finished runs, then running and queued jobs. A run of a few seconds is as readable as one of several hours.
+  A job using several GPUs spans several rows. Both views support placing and dragging jobs.
 - **details**: everything about the selected job. On the right, its config as the configs page's tree shows it, cut down to the config and its parents.
 
 To give a job GPUs, select it in the queue and press `a`. A preview shows where it would go. Move it with the arrow keys and press `Enter`, or drag the card with the mouse.
@@ -102,7 +105,8 @@ The bottom line shows the common keys; the settings page (`3`) lists them all.
 | `K` | stop a running job |
 | `p` | pause or resume starting jobs automatically |
 | `1` `2` `3` | schedule / configs / settings view |
-| `h` `l` / `+` `-` | scroll / zoom the history |
+| `v` | switch the timeline between the time view and the task view |
+| `h` `l` / `+` `-` | timeline: pan / zoom the time, or scroll the cards |
 | `g` | on the timeline: back to now |
 | `Esc` | cancel, or leave full screen; otherwise a menu with Options and Exit (running jobs keep running) |
 

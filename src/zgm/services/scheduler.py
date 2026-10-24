@@ -38,14 +38,16 @@ class Result:
 
 @dataclass
 class Slot:
-    """One item in the future part of the timeline (one fixed-width column)."""
+    """One item on the timeline: running/queued work, a placement ghost, or a
+    finished run (the task view and the time view's history blocks)."""
 
     key: str  # assignment id, or GHOST for a placement preview
     task_id: str
     gpu_ids: tuple[int, ...]
     start: datetime | None  # None: unknown (something ahead has no run history)
     end: datetime | None
-    kind: str  # "running" | "planned" | "ghost"
+    kind: str  # "running" | "planned" | "ghost" | "history"
+    state: AssignmentState | None = None  # history slots: how the run ended
 
 
 class ConflictValidator:

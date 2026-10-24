@@ -19,7 +19,7 @@ TASK_COLORS = [
     "#ff40b6",  # temp end
     "#b0a9de",  # download end
 ]
-HISTORY_COLOR = "#2e2e2e"
+HISTORY_COLOR = "#4e5f68"
 GHOST_OK = theme.OK
 GHOST_BAD = theme.BAD
 

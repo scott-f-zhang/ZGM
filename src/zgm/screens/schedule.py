@@ -75,6 +75,7 @@ class ScheduleScreen(Screen):
         Binding("d", "focus_panel('details')", "details", show=False),
         Binding("t", "focus_panel('timeline')", "timeline", show=False),
         Binding("s", "focus_panel('cluster')", "cluster", show=False),
+        Binding("v", "toggle_timeline_view", "timeline: time/tasks", show=False),
     ]
     # panel -> its widget; each is focused with the first letter of its title
     # (Tab goes through them in this order)
@@ -139,9 +140,17 @@ class ScheduleScreen(Screen):
     def on_mount(self) -> None:
         self.store.subscribe(self.refresh_all)
         self.retitle_timeline()
+        self.update_timeline_footer()
         self.refresh_all()
         self.refresh_cluster()
         self.queue.focus()
+
+    def update_timeline_footer(self) -> None:
+        if self.timeline.state.is_tasks:
+            text = "task view ┃ recent 200 runs ┃ v: time view"
+        else:
+            text = "time view ┃ past + estimates to scale ┃ v: task view"
+        self.timeline.border_subtitle = box_footer(text)
 
     def retitle_timeline(self) -> None:
         """``N gpus · M idle``: idle = nothing of zgm's and no other program on it."""
@@ -290,8 +299,9 @@ class ScheduleScreen(Screen):
         return len([a for a in self.svc.planned() if a.id != moving])
 
     def compute_preview(self, now: datetime) -> PlacementPreview | None:
-        """The placement where the cursor points: before the item queued at the
-        cursor's column on its GPU, or at the end of that GPU's row."""
+        """The placement where the cursor points: a queue position in the card
+        view, or the nearest insertion point to the cursor's time in the time
+        view."""
         p = self.placement
         if not p:
             return None
@@ -299,14 +309,52 @@ class ScheduleScreen(Screen):
         if task is None:
             return None
         st = self.timeline.state
-        base = [s for s in self.svc.schedule(now) if s.key != p.assignment_id]
-        pos, _ = queue_position(base, st.cursor_gpu, st.cursor_col)
+        if st.is_tasks:
+            future_col = st.cursor_col - st.now_col
+            if future_col < 0:
+                return None
+            base = [s for s in self.svc.schedule(now) if s.key != p.assignment_id]
+            pos, _ = queue_position(base, st.cursor_gpu, future_col)
+        else:
+            base = [a for a in self.svc.planned() if a.id != p.assignment_id]
+            if st.cursor_zone == "tail":
+                slot = self.timeline.slot_under_cursor()
+                if slot is None:
+                    pos = len(base)
+                elif slot.key == GHOST:
+                    pos = self.preview.position if self.preview else len(base)
+                else:
+                    keys = [a.id for a in base]
+                    at = keys.index(slot.key) if slot.key in keys else len(base)
+                    pos = at + (1 if st.cursor_after else 0)
+            else:
+                when = st.cursor_time
+                if when < now - st.cell:
+                    return None
+                when = max(when, now).replace(second=0, microsecond=0)
+                pos = self._time_position(base, st.cursor_gpu, when)
         gpus = self.svc.suggest_gpus(task, st.cursor_gpu)
         res = self.svc.check(task.id, gpus, assignment_id=p.assignment_id)
         slots, ghost = self.svc.preview(task.id, gpus, pos, p.assignment_id, now)
-        cols, _ = slot_columns(slots)
-        st.cursor_col = next(c for s, c in zip(slots, cols) if s.key == GHOST)
+        if ghost is not None and st.is_tasks:
+            # follow the ghost's column: the card view has no separate drop time
+            cols, _ = slot_columns(slots)
+            st.cursor_col = st.now_col + next(c for s, c in zip(slots, cols)
+                                              if s.key == GHOST)
         return PlacementPreview(gpus, pos, res, ghost, slots)
+
+    @staticmethod
+    def _time_position(planned, gpu: int, when: datetime) -> int:
+        """Index in ``planned`` where a task dropped at ``when`` on ``gpu`` goes."""
+        when = when.replace(second=0, microsecond=0)
+        here = [(i, a) for i, a in enumerate(planned) if gpu in a.gpu_ids]
+        for i, a in here:
+            if a.planned_start is not None and a.planned_start >= when:
+                return i
+        for i, a in here:
+            if a.planned_start is None:
+                return i
+        return here[-1][0] + 1 if here else len(planned)
 
     def queue_number(self, assignment_id: str, slots=None) -> int | None:
         """A queued assignment's place on its GPUs (1 = next), as the timeline numbers it."""
@@ -315,8 +363,7 @@ class ScheduleScreen(Screen):
         return next((c - n_run + 1 for s, c in zip(slots, cols) if s.key == assignment_id), None)
 
     def column_of(self, key: str) -> int | None:
-        tl = self.timeline
-        return next((c for s, c in zip(tl.slots, tl.cols) if s.key == key), None)
+        return self.timeline.column_of(key)
 
     def start_placement(self, task_id: str, assignment_id: str | None = None,
                         via_mouse: bool = False) -> None:
@@ -337,18 +384,39 @@ class ScheduleScreen(Screen):
         self.placement = Placement(task_id, assignment_id, via_mouse, from_queue)
         self.last_error = None
         st = self.timeline.state
-        end = 1 << 30  # past the end of any row: compute_preview puts it after the last item
-        if via_mouse:
-            # park the ghost at the end so it doesn't shift the columns under the pointer
-            st.cursor_col = end
-        else:
+        st.cursor_after = False
+        if st.is_tasks:
+            st.cursor_zone = "cards"
             if assignment_id:
                 a = self.store.assignments[assignment_id]
                 st.cursor_gpu = a.gpu_ids[0]
                 col = self.column_of(assignment_id)
-                st.cursor_col = col if col is not None else end
+                st.cursor_col = col if col is not None else self.timeline.n_items
             else:
-                st.cursor_col = end
+                st.cursor_col = self.timeline.n_items
+        elif assignment_id:
+            a = self.store.assignments[assignment_id]
+            st.cursor_gpu = a.gpu_ids[0]
+            if a.planned_start is not None:
+                st.cursor_zone = "time"
+                st.set_cursor_x(st.time_cell(a.planned_start))
+            else:
+                st.cursor_zone = "tail"
+                col = self.column_of(assignment_id)
+                st.cursor_col = col if col is not None else self.timeline.n_items
+        else:
+            # append: the end of the known queue, or the unknown tail when an
+            # estimate is missing (everything behind it is unknown too)
+            planned = self.svc.planned()
+            if any(a.planned_end is None for a in planned):
+                st.cursor_zone = "tail"
+                st.cursor_col = self.timeline.n_items
+            else:
+                ends = [a.planned_end for a in planned if a.planned_end]
+                target = max(ends) if ends else datetime.now()
+                st.cursor_zone = "time"
+                st.set_cursor_x(st.time_cell(target))
+        if not via_mouse:
             self.timeline.focus()
         self.refresh_timeline()
         self.refresh_details()
@@ -454,6 +522,9 @@ class ScheduleScreen(Screen):
         if self.zoomed and self.zoomed != name:
             self.set_zoom(name)  # full screen follows the focus
         self.panel_widget(name).focus()
+
+    def action_toggle_timeline_view(self) -> None:
+        self.timeline.action_toggle_view()
 
     def action_toggle_zoom(self) -> None:
         if self.placement:
@@ -651,6 +722,13 @@ class ScheduleScreen(Screen):
         self.refresh_timeline()
         self.refresh_details()
 
+    def on_gputimeline_view_changed(self, event: GPUTimeline.ViewChanged) -> None:
+        if self.placement:
+            self.cancel_placement()
+        self.update_timeline_footer()
+        self.refresh_timeline()
+        self.refresh_details()
+
     def on_descendant_focus(self, event) -> None:
         if self.focused is self.timeline:
             self.subject = "timeline"
@@ -661,25 +739,45 @@ class ScheduleScreen(Screen):
 
     # mouse drag ------------------------------------------------------------
     def _drag_to(self, x: int, y: int) -> bool:
-        """Point the placement at the column under (x, y); False outside the queue."""
+        """Point the placement at the card/time under (x, y); False outside it."""
         loc = self.timeline.locate(x, y)
         if loc is None:
             return False
         gpu, hit = loc
-        if hit.zone != "future" or hit.col is None:
-            return False
         st = self.timeline.state
-        ghost = self.preview.ghost if self.preview else None
-        ghost_col = self.column_of(GHOST) if ghost else None
-        col = hit.col
-        if ghost_col is not None and col == ghost_col and gpu in ghost.gpu_ids:
-            insert = ghost_col
+        if st.is_tasks:
+            if hit.zone != "future" or hit.col is None or hit.col < st.now_col:
+                return False
+            st.cursor_gpu = gpu
+            st.cursor_zone = "cards"
+            st.cursor_after = hit.after
+            ghost = self.preview.ghost if self.preview else None
+            ghost_col = self.column_of(GHOST) if ghost else None
+            offset = st.now_col
+            ghost_future = None if ghost_col is None else ghost_col - offset
+            col = hit.col - offset
+            if ghost_future is not None and col == ghost_future and gpu in ghost.gpu_ids:
+                insert = ghost_future
+            else:
+                # on the ghost's rows, the items after it are drawn one column further
+                shifted = (ghost_future is not None and gpu in ghost.gpu_ids
+                           and col > ghost_future)
+                insert = (col - 1 if shifted else col) + (1 if hit.after else 0)
+            st.cursor_col = offset + max(self.run_cols, insert)
+        elif hit.zone == "past" and hit.x is not None:
+            if hit.time is None or hit.time < datetime.now() - st.cell:
+                return False  # history is not a placement target
+            st.cursor_gpu = gpu
+            st.cursor_zone = "time"
+            st.cursor_after = False
+            st.set_cursor_x(hit.x)
+        elif hit.zone == "future" and hit.col is not None:
+            st.cursor_gpu = gpu
+            st.cursor_zone = "tail"
+            st.cursor_col = min(hit.col, self.timeline.n_items)
+            st.cursor_after = hit.after
         else:
-            # on the ghost's rows, the items after it are drawn one column further
-            shifted = ghost_col is not None and gpu in ghost.gpu_ids and col > ghost_col
-            insert = (col - 1 if shifted else col) + (1 if hit.after else 0)
-        st.cursor_gpu = gpu
-        st.cursor_col = max(self.run_cols, insert)
+            return False
         self.refresh_timeline()
         self.refresh_details()
         return True
@@ -697,11 +795,20 @@ class ScheduleScreen(Screen):
         loc = self.timeline.locate(event.x, event.y)
         if loc:
             gpu, hit = loc
-            self.timeline.set_cursor(gpu, hit.col if hit.zone == "future" else None)
+            st = self.timeline.state
+            st.cursor_gpu = gpu
+            if not st.is_tasks and hit.zone == "past" and hit.x is not None:
+                st.set_cursor_x(hit.x)
+                st.cursor_after = False
+            elif hit.col is not None:
+                st.cursor_zone = "cards" if st.is_tasks else "tail"
+                st.cursor_col = min(hit.col, self.timeline.n_items)
+                st.cursor_after = hit.after
         if event.assignment_id:
             a = self.store.assignments.get(event.assignment_id)
             if a:
                 self.queue.select(a.task_id)
+        self.refresh_timeline()
         self.refresh_details()
 
     def on_gpurow_block_drag_move(self, event: GPURow.BlockDragMove) -> None:

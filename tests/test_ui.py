@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import shutil
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from conftest import make_task
 from zgm.app import ZGMApp
 from zgm.models import Task, TaskStatus
 from zgm.screens.config import ConfigScreen
@@ -59,6 +60,12 @@ def card_offset(tl: GPUTimeline, col: int, right_half: bool = False) -> tuple[in
     return LABEL_WIDTH + x + (tl.state.card_width - 2 if right_half else 1), 0
 
 
+async def show_tasks(app, pilot) -> None:
+    """Switch the timeline to fixed-width task cards."""
+    app.screen.timeline.set_view("tasks")
+    await pilot.pause()
+
+
 async def test_keyboard_assign_appends_to_queue(config_dir):
     a, b = task("alpha"), task("beta")
     app = make_app(config_dir, [a, b])
@@ -87,6 +94,7 @@ async def test_keyboard_insert_before_existing(config_dir):
         await pilot.pause()
         app.assignment_service.assign(a.id, [0])
         await pilot.pause()
+        await show_tasks(app, pilot)
         app.screen.queue.select(b.id)
         await pilot.press("a")
         assert app.screen.timeline.state.cursor_col == 1  # end of the queue
@@ -118,6 +126,7 @@ async def test_reorder_with_brackets(config_dir):
         await pilot.pause()
         for t in tasks:
             app.assignment_service.assign(t.id, [0])
+        await show_tasks(app, pilot)
         await pilot.press("t")  # timeline; cursor on column 0
         await pilot.press("right", "right")
         await pilot.press("left_square_bracket")
@@ -134,6 +143,7 @@ async def test_full_name_centred_in_fixed_width_card(config_dir):
         await pilot.pause()
         app.assignment_service.assign(t.id, [0])
         await pilot.pause()
+        await show_tasks(app, pilot)
         tl = app.screen.timeline
         row = app.screen.query_one("#gpu-row-0", GPURow)
         x = LABEL_WIDTH + tl.state.col_x(0)
@@ -160,16 +170,15 @@ async def test_queue_zone_shows_no_times(config_dir):
         app.assignment_service.assign(a.id, [0])
         app.assignment_service.assign(b.id, [1, 2])
         await pilot.pause()
+        await show_tasks(app, pilot)
         tl = app.screen.timeline
-        x0 = LABEL_WIDTH + tl.state.future_x0
         clock = re.compile(r"\d{1,2}:\d{2}")
-        queue_text = [line[x0:] for g in range(4)
+        queue_text = [line[LABEL_WIDTH:] for g in range(4)
                       for line in strip_text(app.screen.query_one(f"#gpu-row-{g}", GPURow)).splitlines()]
         axis = [tl.axis.render_line(y).text for y in range(2)]
-        queue_text += [line[x0:] for line in axis]
+        queue_text += [line[LABEL_WIDTH:] for line in axis]
         assert not any(clock.search(t) or "→" in t for t in queue_text)
         assert "#1" in axis[0] and "#2" not in axis[0]  # a (GPU 0) and b (GPU 1-2): both next
-        assert clock.search(axis[0][LABEL_WIDTH: x0])  # history keeps its clock
 
 
 async def test_multi_gpu_card_aligns_across_rows(config_dir):
@@ -180,6 +189,7 @@ async def test_multi_gpu_card_aligns_across_rows(config_dir):
         app.assignment_service.assign(a.id, [0])
         app.assignment_service.assign(b.id, [1, 2])
         await pilot.pause()
+        await show_tasks(app, pilot)
         rows = {g: app.screen.query_one(f"#gpu-row-{g}", GPURow) for g in range(4)}
         # each GPU's row is packed: the pair is next on GPUs 1 and 2, beside solo
         assert [c.col for c in rows[1].cards] == [0] and [c.col for c in rows[2].cards] == [0]
@@ -202,6 +212,7 @@ async def test_running_work_shares_the_first_column(config_dir):
             app.executor.request_run_now(t)
         app.dispatch()
         await pilot.pause()
+        await show_tasks(app, pilot)
         assert app.store.tasks[b.id].status == TaskStatus.RUNNING
         rows = {g: app.screen.query_one(f"#gpu-row-{g}", GPURow) for g in range(2)}
         cols = {app.store.tasks[k.task_id].name: k.col for r in rows.values() for k in r.cards}
@@ -222,6 +233,7 @@ async def test_cards_stay_in_view_when_the_queue_shrinks(config_dir):
         for t in tasks:
             app.assignment_service.assign(t.id, [0])
         await pilot.pause()
+        await show_tasks(app, pilot)
         tl = app.screen.query_one(GPUTimeline)
         tl.state.scroll_future(99, tl.n_items)  # scrolled to the end of a long queue
         tl._changed()
@@ -261,6 +273,113 @@ async def test_history_left_of_now_uses_actual_times(config_dir):
         assert not app.screen.timeline.slots  # nothing in the queue zone
 
 
+async def test_short_finished_runs_are_visible_in_both_views(config_dir):
+    from zgm.models import Assignment, AssignmentState
+
+    t = Task("short", "echo short", 1)
+    app = make_app(config_dir, [t])
+    now = datetime.now()
+    for _ in range(3):
+        app.store.save_assignment(Assignment(
+            t.id, (0,), now - timedelta(seconds=10), now,
+            actual_start=now - timedelta(seconds=2), actual_end=now - timedelta(seconds=1),
+            state=AssignmentState.COMPLETED), "completed")
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        row = app.screen.query_one("#gpu-row-0", GPURow)
+        assert len(row.past) == 3
+        assert all(block.x1 > block.x0 for block in row.past)
+        assert "▮" in strip_text(row)  # narrow history blocks still show a mark
+        await show_tasks(app, pilot)
+        history = [card for card in row.cards if card.kind == "history"]
+        assert len(history) == 3
+        assert strip_text(row).count("short") >= 3
+
+
+async def test_task_view_keeps_the_last_200_runs(config_dir):
+    from zgm.models import Assignment, AssignmentState
+
+    t = Task("many", "echo many", 1)
+    app = make_app(config_dir, [t])
+    now = datetime.now()
+    for i in range(205):
+        end = now - timedelta(seconds=205 - i)
+        app.store.save_assignment(Assignment(
+            t.id, (0,), end - timedelta(seconds=30), end,
+            actual_start=end - timedelta(seconds=1), actual_end=end,
+            state=AssignmentState.COMPLETED), "completed")
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await show_tasks(app, pilot)
+        row = app.screen.query_one("#gpu-row-0", GPURow)
+        assert len([card for card in row.cards if card.kind == "history"]) == 200
+
+
+async def test_v_switches_timeline_views(config_dir):
+    app = make_app(config_dir, [task("a")])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("v")  # works from the queue, without focusing the timeline
+        await pilot.pause()
+        tl = app.screen.timeline
+        assert tl.state.view == "tasks"
+        assert "task view" in str(tl.border_subtitle)
+        await pilot.press("v")
+        await pilot.pause()
+        assert tl.state.view == "time"
+        assert "time view" in str(tl.border_subtitle)
+
+
+async def test_time_view_draws_planned_work_to_scale(config_dir):
+    app = make_app(config_dir)
+    t = make_task(app.store, "est", hours=1)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(t.id, [0])
+        await pilot.pause()
+        tl = app.screen.timeline
+        a = app.store.active_assignment(t.id)
+        (block,) = [b for b in app.screen.query_one("#gpu-row-0", GPURow).past
+                    if b.key == a.id]
+        assert (block.x0, block.x1) == tl.state.span(a.planned_start, a.planned_end)
+        assert block.x1 > tl.state.now_x  # it is in the future, drawn to scale
+
+
+async def test_time_view_puts_unknown_starts_in_a_tail(config_dir):
+    a, b = task("a"), task("b")
+    app = make_app(config_dir, [a, b])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(a.id, [0])
+        app.assignment_service.assign(b.id, [0])
+        await pilot.pause()
+        tl = app.screen.timeline
+        assert tl.state.tail_width > 0
+        assert any(slot.task_id == b.id for slot in tl.tail_slots)
+        assert "start unknown" in strip_text(app.screen.query_one("#gpu-row-0", GPURow))
+
+
+async def test_time_view_placement_before_a_planned_task(config_dir):
+    app = make_app(config_dir)
+    a = make_task(app.store, "a", hours=1)
+    b = make_task(app.store, "b", hours=1)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(a.id, [0])
+        await pilot.pause()
+        screen = app.screen
+        screen.queue.select(b.id)
+        screen.start_placement(b.id)
+        st = screen.timeline.state
+        st.cursor_zone = "time"
+        st.set_cursor_x(st.now_x)
+        screen.refresh_timeline()
+        assert screen.preview is not None and screen.preview.position == 0
+        await pilot.press("enter")
+        await pilot.pause()
+        assert planned_names(app) == ["b", "a"]
+
+
 async def test_mouse_drag_card_onto_timeline(config_dir):
     a, b = task("alpha"), task("beta")
     app = make_app(config_dir, [a, b])
@@ -268,6 +387,7 @@ async def test_mouse_drag_card_onto_timeline(config_dir):
         await pilot.pause()
         app.assignment_service.assign(a.id, [0])
         await pilot.pause()
+        await show_tasks(app, pilot)
         screen: ScheduleScreen = app.screen
         card = screen.query_one(f"#card-{b.id}", TaskCard)
         row = screen.query_one("#gpu-row-0", GPURow)
@@ -284,6 +404,29 @@ async def test_mouse_drag_card_onto_timeline(config_dir):
         assert screen.placement is None
 
 
+async def test_mouse_drag_card_onto_time_view(config_dir):
+    app = make_app(config_dir)
+    a = make_task(app.store, "alpha", hours=1)
+    b = make_task(app.store, "beta", hours=1)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(a.id, [0])
+        await pilot.pause()
+        screen = app.screen
+        row = screen.query_one("#gpu-row-0", GPURow)
+        card = screen.query_one(f"#card-{b.id}", TaskCard)
+        tl = screen.timeline
+        target = (LABEL_WIDTH + tl.state.now_x + 6, 0)  # 1.5 h into the future
+        await pilot.mouse_down(card, offset=(3, 1))
+        await pilot.hover(card, offset=(6, 2))
+        await pilot.hover(row, offset=target)
+        await pilot.mouse_up(row, offset=target)
+        await pilot.pause()
+        assert planned_names(app) == ["alpha", "beta"]
+        assert app.store.active_assignment(b.id).gpu_ids == (0,)
+        assert screen.placement is None
+
+
 async def test_mouse_drag_card_after_existing(config_dir):
     a, b = task("alpha"), task("beta")
     app = make_app(config_dir, [a, b])
@@ -291,6 +434,7 @@ async def test_mouse_drag_card_after_existing(config_dir):
         await pilot.pause()
         app.assignment_service.assign(a.id, [0])
         await pilot.pause()
+        await show_tasks(app, pilot)
         screen = app.screen
         card = screen.query_one(f"#card-{b.id}", TaskCard)
         row = screen.query_one("#gpu-row-0", GPURow)
@@ -310,6 +454,7 @@ async def test_mouse_drag_existing_block(config_dir):
         app.assignment_service.assign(a.id, [0])
         app.assignment_service.assign(b.id, [0])
         await pilot.pause()
+        await show_tasks(app, pilot)
         screen = app.screen
         tl = screen.timeline
         row0 = screen.query_one("#gpu-row-0", GPURow)
@@ -322,6 +467,30 @@ async def test_mouse_drag_existing_block(config_dir):
         assert len(app.store.assignments) == 2
         # nothing else is queued on GPU 3: beta is next there, beside alpha
         assert [c.col for c in row3.cards] == [0] and [c.col for c in row0.cards] == [0]
+
+
+async def test_mouse_drag_planned_block_in_time_view(config_dir):
+    app = make_app(config_dir)
+    a = make_task(app.store, "alpha", hours=1)
+    b = make_task(app.store, "beta", hours=1)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(a.id, [0])
+        app.assignment_service.assign(b.id, [0])
+        await pilot.pause()
+        screen = app.screen
+        tl = screen.timeline
+        row0 = screen.query_one("#gpu-row-0", GPURow)
+        row2 = screen.query_one("#gpu-row-2", GPURow)
+        start = app.store.active_assignment(b.id).planned_start
+        x = LABEL_WIDTH + tl.state.time_cell(start) + 2  # inside beta's block
+        await pilot.mouse_down(row0, offset=(x, 0))
+        await pilot.hover(row0, offset=(x + 2, 0))
+        await pilot.hover(row2, offset=(x, 0))
+        await pilot.mouse_up(row2, offset=(x, 0))
+        await pilot.pause()
+        assert app.store.active_assignment(b.id).gpu_ids == (2,)
+        assert screen.placement is None
 
 
 async def test_drop_on_history_cancels(config_dir):
@@ -551,6 +720,7 @@ async def test_rename_task_from_queue_and_timeline(config_dir):
         await pilot.press(*["backspace"] * 10, *"second", *["enter"] * 6)
         await pilot.pause()
         assert app.store.tasks[b.id].name == "second"
+        await show_tasks(app, pilot)
         row = app.screen.query_one("#gpu-row-0", GPURow)
         assert "second" in strip_text(row)
 
@@ -782,6 +952,7 @@ async def test_each_gpu_row_is_packed_from_the_first_queue_column(config_dir):
         for t, g in [(a, 0), (b, 1), (c, 3), (d, 0)]:
             svc.assign(t.id, [g])
         await pilot.pause()
+        await show_tasks(app, pilot)
         rows = {g: app.screen.query_one(f"#gpu-row-{g}", GPURow) for g in range(4)}
         assert [x.col for x in rows[3].cards] == [0]
         assert [x.col for x in rows[0].cards] == [0, 1]
@@ -913,4 +1084,4 @@ async def test_terse_cards_idle_count_and_keys_in_settings(config_dir):
         sections = dict((t, [b.description for b in bs]) for t, bs in app.screen.key_sections())
         keys = " ".join(d for ds in sections.values() for d in ds)
         assert app.screen.query_one("#keys").display
-        assert "unassign" in keys and "history: zoom in" in keys and "derive" in keys
+        assert "unassign" in keys and "time: zoom in" in keys and "derive" in keys

@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from conftest import T0
 from zgm.models import Assignment, AssignmentState
 from zgm.widgets.timeline_state import (
-    MIN_CARD_WIDTH, TimelineState, ceil_time, floor_time, wrap_center,
+    MIN_CARD_WIDTH, TASK_VIEW, TIME_VIEW, TimelineState, ceil_time, floor_time,
+    wrap_center,
 )
 
 
@@ -13,52 +14,88 @@ def state(width: int = 100, card_width: int = 24, **kw) -> TimelineState:
     return TimelineState(now=T0, width=width, card_width=card_width, **kw)
 
 
-def test_zones_split_at_now():
+def tail_state(width: int = 100, card_width: int = 24, **kw) -> TimelineState:
+    """A time view with one unknown-start card column at the right."""
+    s = state(width=width, card_width=card_width, **kw)
+    s.tail_width = card_width + 1
+    return s
+
+
+def test_time_view_is_one_axis():
     s = state()
-    assert s.past_width == 25 and s.divider_x == 25 and s.future_x0 == 26
-    assert s.past_end == T0
-    assert s.visible_cols == 3  # (100 - 26 + 1) // 25
-
-
-def test_past_zone_is_to_scale():
-    s = state()  # 15 min/cell
-    assert s.x_to_time(s.past_width) == T0
-    assert s.time_to_x(T0 - timedelta(hours=1)) == s.past_width - 4
-    assert s.span(T0 - timedelta(hours=1), T0) == (21, 25)
-    assert s.span(T0, T0 + timedelta(hours=1)) is None  # future is not drawn to scale
+    assert s.view == TIME_VIEW
+    assert s.past_width == 100 and s.future_x0 == 101
+    assert s.now_x == 33 and s.divider_x == 33
+    assert s.x_to_time(s.now_x) == T0
+    assert s.time_to_x(T0) == s.now_x
+    assert s.span(T0 - timedelta(hours=1), T0) == (29, 33)
+    assert s.span(T0, T0 + timedelta(hours=1)) == (33, 37)  # future is to scale too
     assert s.span(T0 - timedelta(days=3), T0 - timedelta(days=2)) is None
+
+
+def test_time_view_pans_and_zooms_around_now():
+    s = state()
     s.pan_past(4)
-    assert s.past_end == T0 - timedelta(hours=1)
+    assert s.now_x == 37 and s.x_to_time(37) == T0
     s.zoom(+1)
     assert s.minutes_per_cell == 30
+    assert s.x_to_time(s.now_x) == T0
+    s.reset()
+    assert s.now_x == 33 and s.cursor_x == 33
 
 
-def test_future_columns_have_fixed_width():
-    s = state()
-    assert [s.col_x(c) for c in range(4)] == [26, 51, 76, None]
+def test_unknown_tail_is_a_fixed_width_column():
+    s = tail_state()
+    assert s.past_width == 75 and s.future_x0 == 76
+    assert s.visible_cols == 1
+    assert s.col_x(0) == 76
     s.future_scroll = 1
-    assert s.col_x(0) is None and s.col_x(1) == 26
+    assert s.col_x(0) is None and s.col_x(1) == 76
+    assert s.hit(76).zone == "future" and s.hit(76).col == 1
+    assert s.hit(89).after is True
 
 
-def test_hit_testing():
+def test_time_view_hit_testing():
     s = state()
     assert s.hit(-1).zone == "label"
-    assert s.hit(3).zone == "past" and s.hit(3).time == s.x_to_time(3)
-    assert s.hit(25).zone == "divider"
-    h = s.hit(26)
-    assert (h.zone, h.col, h.after) == ("future", 0, False)
-    h = s.hit(26 + 20)
-    assert (h.col, h.after) == (0, True)
-    assert s.hit(51).col == 1
+    hit = s.hit(3)
+    assert hit.zone == "past" and hit.time == s.x_to_time(3) and hit.x == 3
+    assert s.hit(s.now_x).zone == "past" and s.hit(s.now_x).time == T0
+    assert s.hit(99).zone == "past"
+    s = tail_state()
+    assert s.hit(s.past_width).zone == "divider"
+    assert s.hit(s.past_width + 1).zone == "future"
 
 
-def test_cursor_scrolls_columns():
-    s = state()
+def test_task_view_is_all_fixed_width_cards():
+    s = state(view=TASK_VIEW, now_col=3)
+    assert s.past_width == 0 and s.future_x0 == 0
+    assert [s.col_x(c) for c in range(4)] == [0, 25, 50, 75]
+    assert s.col_x(4) is None
+    s.future_scroll = 1
+    assert s.col_x(0) is None and s.col_x(1) == 0
+    assert s.hit(0).zone == "future" and s.hit(0).col == 1
+    assert s.hit(20).after is True
+    s.now_col = 1
+    assert s.divider_x == s.col_x(1) - 1
+
+
+def test_cursor_moves_between_time_and_tail():
+    s = tail_state()
+    s.set_cursor_x(74)
+    s.move_cursor(1, n_items=1)
+    assert s.cursor_zone == "tail" and s.cursor_col == 0
+    s.move_cursor(-1, n_items=1)
+    assert s.cursor_zone == "time" and s.cursor_x == 74
+
+
+def test_cursor_scrolls_card_columns():
+    s = state(view=TASK_VIEW)
     s.move_cursor(5, n_items=5)
-    assert s.cursor_col == 5 and s.future_scroll == 3
+    assert s.cursor_col == 5 and s.future_scroll == 2
     s.move_cursor(-10, n_items=5)
     assert s.cursor_col == 0 and s.future_scroll == 0
-    assert s.hidden_cols(5) == (0, 3)
+    assert s.hidden_cols(5) == (0, 2)
 
 
 def test_card_width_minimum():

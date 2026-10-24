@@ -62,6 +62,8 @@ class PastBlock:
     bg: str
     fg: str = theme.MAIN_FG
     gpu_ids: tuple[int, ...] = field(default_factory=tuple)
+    selected: bool = False  # under the time-view cursor
+    kind: str = "history"  # history | running | planned | ghost
 
 
 def card_rows_needed(card: Card) -> int:
@@ -98,6 +100,7 @@ class GPURow(Widget):
         self.prev_gpu: int | None = None
         self.next_gpu: int | None = None
         self.end_slot_col: int | None = None  # draw the "end of queue" placeholder here
+        self.show_cursor = False
         self._press: tuple[int, int, str] | None = None
         self._dragging = False
 
@@ -109,11 +112,13 @@ class GPURow(Widget):
         prev_gpu: int | None,
         next_gpu: int | None,
         end_slot_col: int | None,
+        show_cursor: bool = False,
     ) -> None:
         self.cards = [c for c in cards if self.gpu.id in c.gpu_ids]
         self.past = [b for b in past if self.gpu.id in b.gpu_ids]
         self.prev_gpu, self.next_gpu = prev_gpu, next_gpu
         self.end_slot_col = end_slot_col
+        self.show_cursor = show_cursor
         self.styles.height = self.needed_height()
         self.refresh()
 
@@ -197,6 +202,7 @@ class GPURow(Widget):
             t = st.x_to_time(x)
             tick = gutter and (t.hour * 60 + t.minute) % mark_every < st.minutes_per_cell
             cells[x] = ("┊" if tick else " ", Style(bgcolor=PAST_BG, color=GRID))
+        selected_here = False
         for b in self.past:
             x0, x1 = max(0, b.x0), min(pw, b.x1)
             if x1 <= x0 or gutter:
@@ -204,6 +210,15 @@ class GPURow(Widget):
             style = Style(bgcolor=b.bg, color=b.fg)
             for x in range(x0, x1):
                 cells[x] = (" ", style)
+            if b.selected and st.cursor_gpu in b.gpu_ids:
+                selected_here = True
+                edge = Style(bgcolor=b.bg, color=theme.TITLE, bold=True)
+                cells[x0] = ("▌", edge)
+                if x1 - x0 > 1:
+                    cells[x1 - 1] = ("▐", edge)
+            if x1 - x0 < 3 and y == body // 2:  # too narrow for a label: draw a mark
+                mark = {"running": "▶", "planned": "◇", "ghost": "◇"}.get(b.kind, "▮")
+                cells[x0] = (mark, style + Style(color=theme.TITLE, bold=True))
             lines = wrap_center(b.label, x1 - x0) if x1 - x0 >= 3 else []
             if len(lines) > body:  # never taller than the row: last line gets an ellipsis
                 lines = lines[:body]
@@ -214,8 +229,17 @@ class GPURow(Widget):
                     cells[x0 + i] = (ch, style + Style(bold=True))
 
         # divider at now ------------------------------------------------------
-        if st.divider_x < width:
-            cells[st.divider_x] = ("┃", Style(color=NOW_COLOR, bold=True, bgcolor=FUTURE_BG))
+        now_limit = pw if st.view == "time" else width
+        if 0 <= st.divider_x < now_limit:
+            cells[st.divider_x] = ("┃", Style(
+                color=NOW_COLOR, bold=True,
+                bgcolor=PAST_BG if st.view == "time" else FUTURE_BG))
+
+        # time-view cursor, when it is not on a block --------------------------
+        if (self.show_cursor and st.view == "time" and not selected_here and not gutter
+                and st.cursor_gpu == self.gpu.id and st.cursor_zone == "time"
+                and st.cursor_x is not None and 0 <= st.cursor_x < pw):
+            cells[st.cursor_x] = ("▎", Style(color=NOW_COLOR, bold=True))
 
         # future zone: fixed-width cards --------------------------------------
         w = st.card_width
@@ -278,7 +302,7 @@ class GPURow(Widget):
                 self.post_message(self.BlockDragMove(self._press[2], event.screen_x, event.screen_y))
             return
         hit = self.state.hit(self.column_at(event.screen_x))
-        if hit.zone == "future":
+        if hit.zone in ("future", "past"):
             self.post_message(self.Hover(self.gpu.id, hit))
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
@@ -292,8 +316,14 @@ class GPURow(Widget):
                           if b.x0 <= self.column_at(event.screen_x) < b.x1), None)
             key = block.key if block else None
         self.post_message(self.BlockPressed(self.gpu.id, key, event.screen_x, event.screen_y))
-        if card is not None and card.kind == "planned":
-            self._press = (event.screen_x, event.screen_y, card.key)
+        moving = card.key if card is not None and card.kind == "planned" else None
+        if hit.zone == "past":
+            block = next((b for b in self.past
+                          if b.x0 <= self.column_at(event.screen_x) < b.x1), None)
+            if block is not None and block.kind == "planned":
+                moving = block.key
+        if moving is not None:
+            self._press = (event.screen_x, event.screen_y, moving)
             self._dragging = False
             self.capture_mouse()
         event.stop()
