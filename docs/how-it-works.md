@@ -110,7 +110,7 @@ Limits, from what NVML can see:
 
 - **Graphics-only processes are not counted**: the desktop, browsers, games. Every display GPU has some, and on Windows (WDDM) NVML can't say how much memory each one uses. A game holding 10 GB of VRAM is therefore not detected.
 - On Windows (WDDM), per-process memory is not available. The label then shows the process count without a size; the GPU is blocked either way.
-- If NVML can't list a GPU's processes (old driver, unsupported device), zgm says so once (**? procs unknown** on the label) and does not block that GPU, since it has nothing to go on.
+- If NVML can't list a GPU's processes (old driver, unsupported device), zgm does not block that GPU, since it has nothing to go on; `zgm daemon status` and the daemon log say so once. Apple GPUs are the same: macOS does not expose per-process GPU use, so zgm never blocks them for another program.
 - In a container without the host's PID namespace, NVML reports host PIDs, which zgm can't match to its own tasks. Those tasks' GPUs are already busy in zgm's queue anyway, but the label may count them as *other*.
 - A program can still grab a GPU right after zgm checked. Nothing short of exclusive compute mode (`nvidia-smi -c EXCLUSIVE_PROCESS`) can reserve a GPU.
 

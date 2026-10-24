@@ -132,8 +132,7 @@ class GPURow(Widget):
 
     @property
     def label_lines(self) -> int:
-        g = self.gpu
-        return LABEL_LINES + (1 if g.external or not g.processes_visible else 0)
+        return LABEL_LINES + (1 if self.gpu.external else 0)
 
     def column_at(self, screen_x: int) -> int:
         return screen_x - self.region.x - LABEL_WIDTH
@@ -169,8 +168,6 @@ class GPURow(Widget):
             n = len(g.external)
             lines.append([(f" ! other: {n} proc{'s' if n > 1 else ''}{mem}",
                            base + Style(color=theme.BAD, bold=True))])
-        elif not g.processes_visible:
-            lines.append([(" ? procs unknown", base + Style(color=theme.WARN))])
         parts = lines[y] if y < len(lines) else []
         segs, used = [], 0
         for part in parts:
