@@ -4,9 +4,9 @@
 
 You have a few GPUs and a list of training runs. Put the runs in the queue, say which GPUs each one gets, and zgm starts each run as soon as its GPUs are free, one after another. You can watch it all on one screen: what's running, what's next, and what already finished.
 
-![The zgm dashboard: the host, the waiting tasks, a timeline of the GPUs, and the selected job's details](docs/images/schedule.png)
+![The zgm dashboard: the host and the Slurm jobs at the top, the waiting tasks (auto-fill and manual), a timeline of the GPUs, and the selected job's details](docs/images/schedule.png)
 
-<sub>Demo data, timeline in the time view. The red line is now: left of it, what already ran and what is running, to scale; right of it, the estimated queue, and on the far right the jobs whose start is not known yet. The rainbow bar marks the selected run. GPU 3 is in use by another program (`! other`).</sub>
+<sub>Demo data. At the top, this machine's load and, on a cluster, your Slurm jobs and the GPUs zgm got from them. Then the waiting tasks: those idle GPUs may take on their own (auto-fill, by priority) and those you place yourself (manual). The timeline is in the time view: the red line is now; left of it, what already ran and what is running, to scale; right of it, the estimated queue, and on the far right the jobs whose start is not known yet. The rainbow bar marks the selected run. GPU 3 is in use by another program (`! other`).</sub>
 
 > **Scripts and AI agents:** see [AGENTS.md](AGENTS.md) for using zgm from the command line only, with JSON output.
 
@@ -118,10 +118,12 @@ After 10 minutes without a key or the mouse the view stops redrawing (`IDLE` at 
 
 The bar at the bottom says whether jobs are being started automatically (**AUTO**), are paused (**PAUSED**), or whether nothing is running the queue (**PLAN ONLY**; start it with `zgm daemon start`). **FILL** next to AUTO means auto-fill is on.
 
-The settings view (`3`) holds switches that every zgm on the queue shares:
+The settings view (`3`) holds switches that every zgm on the queue shares, and lists every key:
 
 - **Auto-start** (the same as `p`).
-- **Auto-fill idle GPUs**: when a GPU has nothing running or queued, zgm starts the oldest job of the queue's *auto-fill* section that fits there. Jobs whose last run failed or was stopped are left for you.
+- **Auto-fill idle GPUs**: when a GPU has nothing running or queued, zgm starts the job of the queue's *auto-fill* section with the highest priority that fits there (the oldest among equals). Jobs whose last run failed or was stopped are left for you.
+
+![The settings view: the auto-start and auto-fill switches, and all keys by panel](docs/images/settings.png)
 
 Full screen (`f`), the queue lists its jobs in two sections, **auto-fill** and **manual**, and in each by the folder of their config. New jobs go to manual. `space` moves the selected job to the other section, `A` its whole folder; `zgm submit --autofill` adds a job straight to auto-fill. Auto-fill takes the job with the highest priority first (`+` / `-` there, `zgm submit --priority N`, or `_scheduler_.priority` in a config; default 0), the oldest among equals.
 

@@ -230,8 +230,8 @@ class TimeAxis(Widget):
 
 class GPUTimeline(Vertical, can_focus=True):
     BINDINGS = [
-        Binding("left", "cursor(-1)", "earlier", show=False),
-        Binding("right", "cursor(1)", "later", show=False),
+        Binding("left", "cursor(-1)", "previous run", show=False),
+        Binding("right", "cursor(1)", "next run", show=False),
         Binding("up,k", "gpu(-1)", "GPU above", show=False),
         Binding("down,j", "gpu(1)", "GPU below", show=False),
         Binding("h", "pan(1)", "time: back / cards: left", show=False),

@@ -23,6 +23,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "images"
@@ -37,6 +38,27 @@ from zgm.runtime.base import RunHandle, RunState  # noqa: E402
 from zgm.services.scheduler import AssignmentService  # noqa: E402
 from zgm.services.task_store import TaskStore, add_completed_run  # noqa: E402
 from zgm.storage.sqlite import SqliteStorage  # noqa: E402
+
+
+class DemoCluster:
+    """What the cluster panel shows, made up: Slurm jobs, one of them holding the
+    four GPUs. Display only: nothing is asked of a real Slurm."""
+
+    backend = SimpleNamespace(name="slurm")
+
+    def table(self) -> list[list[str]]:
+        return [["1001", "RUNNING", "node07", "4 x a100", "GPU 0-3", "this job · 2-21:40:12 left"],
+                ["1002", "PENDING", "-", "4 x a100", "", "starts ~10-28 09:30 (Priority)"],
+                ["1003", "PENDING", "-", "2 x a100", "", "starts ~10-28 14:00 (Resources)"]]
+
+    def seen_at(self) -> str:
+        return datetime.now().isoformat(timespec="seconds")
+
+    def node_of(self, gpus):
+        return None
+
+    def invalidate(self) -> None:
+        pass
 
 
 class StillRunning:
@@ -106,7 +128,11 @@ def scene(db: Path) -> None:
                                      actual_start=start, actual_end=start + timedelta(minutes=50),
                                      state=AssignmentState.FAILED), "failed")
 
-    for t in (resnet, vit, bert, evalc, diff, llama, clip):
+    # waiting: two for auto-fill (with priorities), the rest manual
+    whisper = task("whisper-asr-eval", "python asr_eval.py --model whisper-large")
+    for t, prio in ((llama, 2), (clip, 1)):
+        t.autofill, t.priority = True, prio
+    for t in (resnet, vit, bert, evalc, diff, llama, clip, whisper):
         store.add_task(t)
     for t, gpus, minutes in ((resnet, (0,), 95), (vit, (1, 2), 150)):
         began = now - timedelta(minutes=minutes)
@@ -125,7 +151,9 @@ def scene(db: Path) -> None:
 def make_app(db: Path, configs: Path) -> ZGMApp:
     app = ZGMApp(storage=SqliteStorage(db), mock_gpus=4, config_dir=configs,
                  stats_interval=0, runtime=StillRunning(), card_width=18)
-    app.gpu_source = "NVML"
+    app.cluster = DemoCluster()  # the top row's cluster box, as on a Slurm cluster
+    app.follow_cluster = lambda: None  # nothing to follow: the groups are made up
+    app.gpu_source = "slurm · NVML"
     for g, (used, util) in zip(app.gpus, [(61, 92), (71, 88), (70, 87), (31, 46)]):
         g.name = "NVIDIA A100-SXM4-80GB"
         g.memory_used, g.utilization = used * 1024**3, util
@@ -148,12 +176,16 @@ async def shoot(svg_dir: Path, configs: Path) -> list[Path]:
         await pilot.press("t")  # the task view: one card per run
         await pilot.pause()
         shots.append(Path(app.save_screenshot("tasks.svg", str(svg_dir))))
-        app.screen.queue.focus()
-        await pilot.press("right", "right")  # a waiting task (clip-zero-shot)
+        clip = next(t for t in app.store.tasks.values() if t.name == "clip-zero-shot")
+        app.screen.queue.select(clip.id)  # a waiting task
+        await pilot.pause()
         await pilot.press("a", "down", "down")  # place it: right after now, then on GPU 2
         await pilot.pause()
         shots.append(Path(app.save_screenshot("placing.svg", str(svg_dir))))
-        await pilot.press("escape", "2")
+        await pilot.press("escape", "3")  # the settings view: switches and all keys
+        await pilot.pause()
+        shots.append(Path(app.save_screenshot("settings.svg", str(svg_dir))))
+        await pilot.press("2")
         await pilot.pause()
         screen = app.screen
         screen.current = app.config_repo.get("resnet50_adamw_bs512").path
