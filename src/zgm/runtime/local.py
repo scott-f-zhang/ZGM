@@ -128,9 +128,9 @@ def cancel_run(base: Path) -> None:
             deadline = time.monotonic() + 3
             while is_locked(_file(base, ".lock")) and time.monotonic() < deadline:
                 time.sleep(0.05)
-            if is_locked(_file(base, ".lock")):
-                # macOS answers a dead group with EPERM, not ESRCH
-                os.killpg(pids[0], signal.SIGKILL)
+            # always: the runner dies on TERM and frees the lock at once, while a task
+            # that ignores TERM would live on. macOS answers a dead group with EPERM.
+            os.killpg(pids[0], signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
     deadline = time.monotonic() + 5

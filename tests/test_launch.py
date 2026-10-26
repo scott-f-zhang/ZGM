@@ -290,6 +290,29 @@ def test_local_runtime_cancel_kills_the_process_tree(tmp_path):
     assert "stopped" in rt.log_path(a.id).read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_local_runtime_cancel_kills_a_task_that_ignores_sigterm(tmp_path):
+    # the runner dies on SIGTERM at once, so its lock frees before such a task exits;
+    # stopping must still not leave it running (on a GPU)
+    (tmp_path / "stubborn.py").write_text(
+        "import os, signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "open('pid', 'w').write(str(os.getpid()))\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    t = Task("stubborn", launch=LaunchSpec(cwd=str(tmp_path), command=f"'{PY}' stubborn.py"))
+    rt = LocalRuntime(tmp_path / "logs")
+    handle = rt.submit(t, _assignment(t))
+    deadline = time.monotonic() + 10
+    while not (tmp_path / "pid").exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    pid = int((tmp_path / "pid").read_text())
+    rt.cancel(handle)
+    deadline = time.monotonic() + 5
+    while pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not pid_alive(pid)
+
+
 def test_local_runtime_reports_bad_spec(tmp_path):
     rt = LocalRuntime(tmp_path / "logs")
     t = Task("job", launch=LaunchSpec(cwd=str(tmp_path / "missing"), command="echo"))
