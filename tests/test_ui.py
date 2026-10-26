@@ -1456,3 +1456,28 @@ async def test_task_view_arrows_only_land_on_cards(config_dir):
         await pilot.press("up")
         await pilot.pause()
         assert st.cursor_gpu == 0 and tl.slot_under_cursor() is not None
+
+
+async def test_details_of_a_finished_run_do_not_say_it_waits_in_the_queue(config_dir):
+    t, f = Task("done-run", "echo d", 1), Task("failed-run", "echo f", 1)
+    app = make_app(config_dir, [t, f])
+    now = datetime.now().replace(microsecond=0)
+    _finished(app, t, 0, now - timedelta(minutes=30), 60)
+    t.status = TaskStatus.COMPLETED
+    f.status = TaskStatus.FAILED  # failed runs go back to the queue: the line stays
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        import io
+
+        from rich.console import Console
+
+        from zgm.widgets.task_details import TaskDetails
+        details = app.screen.query_one(TaskDetails)
+        for task_, waits in ((t, False), (f, True)):
+            details.show(task_, app.store.assignments_for_task(task_.id))
+            await pilot.pause()
+            info = app.screen.query_one("#details-info")
+            out = Console(width=200, file=io.StringIO(), record=True)
+            out.print(getattr(info, "content", None) or info.renderable)
+            text = out.export_text()
+            assert ("waiting in the queue" in text) is waits

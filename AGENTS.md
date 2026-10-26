@@ -261,7 +261,7 @@ Everything lives next to the database, in the state dir: `$ZGM_HOME`, default `~
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev,ray]"
-.venv/bin/python -m pytest -q        # ~225 tests, ~1.5 min; Ray tests skip without [ray]
+.venv/bin/python -m pytest -q        # ~310 tests, ~2 min; Ray tests skip without [ray]
 ```
 
 Layout (`src/zgm/`):
@@ -288,6 +288,7 @@ Conventions:
 - Placement goes through `AssignmentService.assign/move` (keyboard, mouse and `zgm submit` alike). The scheduling rule lives in `simulate()` and `ready_to_start()`; keep them consistent.
 - Execution logic belongs in `services/executor.py`, not in the TUI. The UI never imports Ray.
 - State shared between processes goes in SQLite (other zgm processes notice through `PRAGMA data_version`), or in a run's files. Never only in memory.
+- After changing what the TUI shows, re-run `scripts/make_screenshots.py` (a made-up demo scene: no real host, task or path names) so the README pictures match.
 - Tests that start real processes must clean them up. Windows matters: venv `python.exe` is a launcher shim that starts the real interpreter as a child, so the pid you spawn is not the pid that runs, and a file can't be replaced while another process reads it.
 - No NVIDIA GPU is needed for tests: NVML is faked (`tests/test_gpu_usage.py`), and `--mock-gpus` / `ZGM_MOCK_GPUS` give fake devices. No cluster either: `tests/test_cluster.py` fakes a backend and a transport, and the remote-run tests put a fake `ssh` on PATH.
 - Nothing outside `cluster/<backend>.py` knows a backend. A new one (a list of PCs, another scheduler) is a class implementing `cluster.base.Backend`, one entry in `cluster.BACKENDS`, and tests like `tests/test_slurm_backend.py`; a new way to reach hosts is a class in `cluster/transport.py`; a new kind of GPU (not NVML) is a provider in `services/gpu_discovery.py`.

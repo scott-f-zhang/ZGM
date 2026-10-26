@@ -4,9 +4,9 @@
 
 You have a few GPUs and a list of training runs. Put the runs in the queue, say which GPUs each one gets, and zgm starts each run as soon as its GPUs are free, one after another. You can watch it all on one screen: what's running, what's next, and what already finished.
 
-![The zgm dashboard: waiting tasks at the top, details in the middle, and a timeline of the GPUs at the bottom](docs/images/schedule.png)
+![The zgm dashboard: the host, the waiting tasks, a timeline of the GPUs, and the selected job's details](docs/images/schedule.png)
 
-<sub>Demo data. Left of the red line is what already ran; right of it, what is running and what comes next, in order.</sub>
+<sub>Demo data, timeline in the time view. The red line is now: left of it, what already ran and what is running, to scale; right of it, the estimated queue, and on the far right the jobs whose start is not known yet. The rainbow bar marks the selected run. GPU 3 is in use by another program (`! other`).</sub>
 
 > **Scripts and AI agents:** see [AGENTS.md](AGENTS.md) for using zgm from the command line only, with JSON output.
 
@@ -78,13 +78,17 @@ The schedule page has these parts, top to bottom:
 
 - **host**: this machine's CPU, memory, and the disks of the state dir and the home directory (red when less than 10% is free: a full disk makes jobs and zgm fail). In cluster mode the groups of GPUs (e.g. your Slurm jobs or Macs) are listed beside it.
 - **queue**: jobs that are waiting to be given GPUs. New jobs land here when you add them without GPUs, and so do stopped or failed jobs. Jobs marked for auto-fill are on the left, the others (manual) on the right, each side sorted by priority, highest first.
-- **timeline**: one row per GPU, with its memory and load on the left. It has two views; with the timeline focused, `t` switches them:
-  - **time**: the whole strip is to scale. History uses actual times; running and queued jobs use their estimates, so their blocks sit where they will run. Queued jobs with no estimate cannot be placed on the axis and wait in a `start unknown` tail on the right. The red line is now, 70% of the way across (also in the task view).
-  - **tasks**: one fixed-width card per run, in order: the last 200 finished runs, then running and queued jobs. A run of a few seconds is as readable as one of several hours.
+- **timeline**: one row per GPU, with its memory and load on the left. It has two views; with the timeline focused, `t` switches them. In both, the red line is now, 70% of the way across.
+  - **time**: the whole strip is to scale. History uses actual times; running and queued jobs use their estimates, so their blocks sit where they will run. A run of a few seconds still gets a mark (`▮`). Queued jobs with no estimate cannot be placed on the axis and wait in a `start unknown` tail on the right.
+  - **tasks**: one fixed-width card per run: each GPU's most recent finished runs (of the last 200) right before now, then what is running and what is queued. A run of a few seconds is as readable as one of several hours, and each card says how long the run took, when it started, and whether it succeeded (`✓`) or failed (`✗`).
   A job using several GPUs spans several rows. Both views support placing and dragging jobs.
 - **details**: everything about the selected job. On the right, its config as the configs page's tree shows it, cut down to the config and its parents.
 
-To give a job GPUs, select it in the queue and press `a`. A preview shows where it would go. Move it with the arrow keys and press `Enter`, or drag the card with the mouse.
+![The task view: one card per run, each GPU's recent history next to now, then what is running and queued](docs/images/tasks.png)
+
+**Moving around the timeline.** The selected run has a rainbow bar under it. `←` / `→` go to the previous / next run on the GPU, however short or far apart (the time view pans to it), and `↑` / `↓` to another GPU; in the task view they only stop on cards and stay put at the ends. `ctrl`+`+` / `ctrl`+`-` zoom (the time scale, or the card width) around the selected run, or around now when nothing is selected. `h` / `l` pan, `g` goes back to now.
+
+To give a job GPUs, select it in the queue and press `a`. A preview shows where it would go, starting on the first GPU right after now (ahead of what is queued there). Move it with the arrow keys and press `Enter`, or drag the card with the mouse.
 
 ![Placing a job: the preview shows its place in line and its GPUs before you confirm](docs/images/placing.png)
 
@@ -98,7 +102,7 @@ After 10 minutes without a key or the mouse the view stops redrawing (`IDLE` at 
 | `Tab` / `Shift+Tab` | go to the next / previous panel, top to bottom |
 | `f` | show the focused panel full screen, or back |
 | `a` | place the selected job on GPUs |
-| `←` `→` / `↑` `↓` | while placing: move it earlier/later in line, or to other GPUs |
+| `←` `→` / `↑` `↓` | on the timeline: previous / next run, or another GPU; while placing: earlier / later in line, or other GPUs |
 | `Enter` / `Esc` | confirm / cancel; on the timeline, `Enter` picks up a queued job to move it |
 | `[` `]` | move the selected job one place earlier / later |
 | `u` | take a job off the timeline, back to the queue |
@@ -108,7 +112,7 @@ After 10 minutes without a key or the mouse the view stops redrawing (`IDLE` at 
 | `p` | pause or resume starting jobs automatically |
 | `1` `2` `3` | schedule / configs / settings view |
 | `t` | focus the timeline; on the timeline, switch between the time view and the task view |
-| `h` `l` / `ctrl`+`+` `ctrl`+`-` | timeline: pan / zoom the time, or scroll the cards / change their width (`+` `-` work too) |
+| `h` `l` / `ctrl`+`+` `ctrl`+`-` | timeline: pan / zoom around the selected run (the time scale, or the card width; `+` `-` work too) |
 | `g` | on the timeline: back to now |
 | `Esc` | cancel, or leave full screen; otherwise a menu with Options and Exit (running jobs keep running) |
 
@@ -203,6 +207,7 @@ zgm --config-dir examples/configs --db demo.db --runtime local   # T on a config
 
 ```bash
 .venv/bin/pip install -e ".[dev]"        # add ",ray" to also test the Ray runtime
-.venv/bin/python -m pytest -q            # about a minute
+.venv/bin/python -m pytest -q            # about two minutes
 .venv/bin/python scripts/make_screenshots.py   # redo the pictures above after changing the UI
+                                               # (renders with Chromium, or rsvg-convert)
 ```

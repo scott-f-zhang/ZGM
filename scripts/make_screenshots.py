@@ -2,9 +2,10 @@
 
     python scripts/make_screenshots.py [--browser PATH]
 
-Builds a demo scene (made-up tasks and GPUs, no real processes), renders the
-TUI to SVG with Textual, and turns each SVG into a sharp 2x PNG with a headless
-Chromium browser (Edge or Chrome; found automatically, or pass --browser).
+Builds a demo scene (made-up tasks, GPUs and host name, no real processes),
+renders the TUI to SVG with Textual, and turns each SVG into a sharp 2x PNG
+with a headless Chromium browser (Edge or Chrome; found automatically, or pass
+--browser), or with rsvg-convert where no Chromium is installed.
 Re-run it after changing the UI.
 """
 
@@ -15,6 +16,7 @@ import asyncio
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -24,9 +26,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "images"
-SIZE = (190, 44)
+SIZE = (190, 52)
 
 os.environ["ZGM_MOCK_EXTERNAL"] = "3:30500:4242"  # another program on GPU 3
+socket.gethostname = lambda: "node07"  # the host panel's title: not this machine's name
 
 from zgm.app import ZGMApp  # noqa: E402
 from zgm.models import Assignment, AssignmentState, Task, TaskStatus  # noqa: E402
@@ -85,6 +88,16 @@ def scene(db: Path) -> None:
                       now - timedelta(hours=6, minutes=30), timedelta(hours=1, minutes=30))
     add_completed_run(store, task("tokenize-corpus", "python tok.py"), (0,),
                       now - timedelta(hours=5, minutes=40), timedelta(hours=1, minutes=10))
+    # short runs (minutes): visible in the time view, readable cards in the task view
+    for name, command, gpus, ago, minutes in (
+            ("eval-cifar10-c", "python eval.py --suite cifar10-c", (0,), 4 * 60 + 10, 4),
+            ("eval-cifar10-c", "python eval.py --suite cifar10-c", (0,), 3 * 60 + 50, 3),
+            ("ckpt-export", "python export.py --fmt safetensors", (1,), 3 * 60, 2),
+            ("vit-smoke-test", "python train.py --model vit_b16 --steps 200", (1, 2),
+             5 * 60 + 30, 35),
+            ("data-shard-check", "python prep.py --verify", (3,), 4 * 60, 6)):
+        add_completed_run(store, task(name, command, len(gpus)), gpus,
+                          now - timedelta(minutes=ago), timedelta(minutes=minutes))
     failed = store.add_task(task("bert-large-lr1e-3", "python finetune.py --lr 1e-3"))
     failed.status = TaskStatus.FAILED
     store.update_task(failed, quiet=True)
@@ -128,11 +141,16 @@ async def shoot(svg_dir: Path, configs: Path) -> list[Path]:
     shots = []
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
-        app.screen.queue.focus()
-        await pilot.press("right")  # select a waiting task: its details show
+        await pilot.press("t", "down")  # the timeline (time view), GPU 1
+        await pilot.press("left", "left", "left")  # run by run, back to vit-smoke-test
         await pilot.pause()
         shots.append(Path(app.save_screenshot("schedule.svg", str(svg_dir))))
-        await pilot.press("a", "left")  # place it: the preview shows where it would go
+        await pilot.press("t")  # the task view: one card per run
+        await pilot.pause()
+        shots.append(Path(app.save_screenshot("tasks.svg", str(svg_dir))))
+        app.screen.queue.focus()
+        await pilot.press("right", "right")  # a waiting task (clip-zero-shot)
+        await pilot.press("a", "down", "down")  # place it: right after now, then on GPU 2
         await pilot.pause()
         shots.append(Path(app.save_screenshot("placing.svg", str(svg_dir))))
         await pilot.press("escape", "2")
@@ -146,7 +164,8 @@ async def shoot(svg_dir: Path, configs: Path) -> list[Path]:
     return shots
 
 
-def find_browser(given: str | None) -> str:
+def find_browser(given: str | None) -> str | None:
+    """A Chromium browser, or None to fall back to rsvg-convert."""
     candidates = [given, shutil.which("msedge"), shutil.which("chrome"),
                   shutil.which("google-chrome"), shutil.which("chromium"),
                   r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -155,10 +174,19 @@ def find_browser(given: str | None) -> str:
     for c in candidates:
         if c and Path(c).exists():
             return c
-    sys.exit("no Chromium browser found: pass --browser PATH")
+    if shutil.which("rsvg-convert"):
+        return None
+    sys.exit("no Chromium browser and no rsvg-convert found: pass --browser PATH")
 
 
-def to_png(browser: str, svg: Path, png: Path) -> None:
+def to_png(browser: str | None, svg: Path, png: Path) -> None:
+    if browser is None:  # rsvg-convert: the terminal font comes from the system
+        subprocess.run(["rsvg-convert", "-z", "2", "-b", "black", str(svg), "-o", str(png)],
+                       check=True, capture_output=True, timeout=120)
+        if shutil.which("convert"):  # a terminal has few colours: a palette PNG is ~4x smaller
+            subprocess.run(["convert", str(png), "+dither", "-colors", "256", f"PNG8:{png}"],
+                           check=True, capture_output=True, timeout=120)
+        return
     text = svg.read_text(encoding="utf-8")
     width, height = (float(v) for v in re.search(
         r'viewBox="0 0 ([\d.]+) ([\d.]+)"', text).groups())

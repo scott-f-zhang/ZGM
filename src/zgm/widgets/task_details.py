@@ -12,7 +12,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Static
 
-from ..models import Assignment, AssignmentState, Task, format_estimate
+from ..models import Assignment, AssignmentState, Task, TaskStatus, format_estimate
 from .config_chain import ConfigChain
 from .palette import task_color
 from .task_card import STATUS_STYLE
@@ -102,7 +102,7 @@ class TaskDetails(Horizontal, can_focus=True):
                 "GPU pref / actual",
                 f"{_gpus(a.preferred_gpu_ids)} / {_gpus(a.actual_gpu_ids)}",
             )
-        else:
+        elif task.status != TaskStatus.COMPLETED:  # finished runs are not in the queue
             grid.add_row("Planned", Text("waiting in the queue — press a to place it", style="dim"),
                          "", "")
         for a in hist[-2:]:
