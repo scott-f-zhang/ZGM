@@ -97,3 +97,16 @@ def test_make_provider_prefers_apple_on_macos(monkeypatch):
     monkeypatch.setattr(gpu_discovery, "AppleGPUProvider", FakeApple)
     monkeypatch.setattr(gpu_discovery.sys, "platform", "darwin")
     assert isinstance(make_provider(), FakeApple)
+
+
+def test_gpu_watch_marks_the_apple_gpu_as_unwatched(store):
+    # no per-process view: nothing counts as external, and it is said once
+    from zgm.services.gpu_usage import GPUWatch
+    provider = AppleGPUProvider(run=Run())
+    devices = provider.discover()
+    watch = GPUWatch(provider, devices)
+    busy, changes = watch.refresh(store)
+    assert busy == set() and devices[0].processes_visible is False
+    assert devices[0].external == []
+    assert len(changes) == 1 and "can't list its processes" in changes[0]
+    assert watch.refresh(store) == (set(), [])

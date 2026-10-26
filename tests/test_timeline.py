@@ -25,23 +25,23 @@ def test_time_view_is_one_axis():
     s = state()
     assert s.view == TIME_VIEW
     assert s.past_width == 100 and s.future_x0 == 101
-    assert s.now_x == 33 and s.divider_x == 33
+    assert s.now_x == 70 and s.divider_x == 70  # now at 70% of the strip
     assert s.x_to_time(s.now_x) == T0
     assert s.time_to_x(T0) == s.now_x
-    assert s.span(T0 - timedelta(hours=1), T0) == (29, 33)
-    assert s.span(T0, T0 + timedelta(hours=1)) == (33, 37)  # future is to scale too
+    assert s.span(T0 - timedelta(hours=1), T0) == (66, 70)
+    assert s.span(T0, T0 + timedelta(hours=1)) == (70, 74)  # future is to scale too
     assert s.span(T0 - timedelta(days=3), T0 - timedelta(days=2)) is None
 
 
 def test_time_view_pans_and_zooms_around_now():
     s = state()
     s.pan_past(4)
-    assert s.now_x == 37 and s.x_to_time(37) == T0
+    assert s.now_x == 74 and s.x_to_time(74) == T0
     s.zoom(+1)
     assert s.minutes_per_cell == 30
     assert s.x_to_time(s.now_x) == T0
     s.reset()
-    assert s.now_x == 33 and s.cursor_x == 33
+    assert s.now_x == 70 and s.cursor_x == 70
 
 
 def test_unknown_tail_is_a_fixed_width_column():
@@ -68,16 +68,26 @@ def test_time_view_hit_testing():
 
 
 def test_task_view_is_all_fixed_width_cards():
+    # width 100, pitch 25: now at x 71, so card columns start at 71 % 25 = 21
     s = state(view=TASK_VIEW, now_col=3)
-    assert s.past_width == 0 and s.future_x0 == 0
-    assert [s.col_x(c) for c in range(4)] == [0, 25, 50, 75]
-    assert s.col_x(4) is None
+    assert s.past_width == 0 and s.future_x0 == 21
+    assert [s.col_x(c) for c in range(4)] == [21, 46, 71, None]
     s.future_scroll = 1
-    assert s.col_x(0) is None and s.col_x(1) == 0
-    assert s.hit(0).zone == "future" and s.hit(0).col == 1
-    assert s.hit(20).after is True
+    assert s.col_x(0) is None and s.col_x(1) == 21
+    assert s.hit(21).zone == "future" and s.hit(21).col == 1
+    assert s.hit(41).after is True
+    assert s.hit(5).col is None  # the blank lead
     s.now_col = 1
     assert s.divider_x == s.col_x(1) - 1
+
+
+def test_task_view_puts_now_at_70_percent_like_the_time_view():
+    for now_col in (0, 1, 5):  # no history, a little, more than fits on the left
+        s = state(view=TASK_VIEW, now_col=now_col)
+        s.scroll_to_now_col()
+        assert s.divider_x == 70 == state().divider_x
+        s.clamp_scroll(now_col + 2)
+        assert s.divider_x == 70  # clamping keeps the empty columns left of now
 
 
 def test_cursor_moves_between_time_and_tail():
@@ -91,11 +101,12 @@ def test_cursor_moves_between_time_and_tail():
 
 def test_cursor_scrolls_card_columns():
     s = state(view=TASK_VIEW)
+    assert s.visible_cols == 3
     s.move_cursor(5, n_items=5)
-    assert s.cursor_col == 5 and s.future_scroll == 2
+    assert s.cursor_col == 5 and s.future_scroll == 3
     s.move_cursor(-10, n_items=5)
     assert s.cursor_col == 0 and s.future_scroll == 0
-    assert s.hidden_cols(5) == (0, 2)
+    assert s.hidden_cols(5) == (0, 3)
 
 
 def test_card_width_minimum():
@@ -142,3 +153,48 @@ def test_actual_gpus_win_for_display():
     assert a.preferred_gpu_ids == (0,) and a.display_gpu_ids == (0,)
     a.actual_gpu_ids = (2,)
     assert a.display_gpu_ids == (2,) and a.preferred_gpu_ids == (0,)
+
+
+def _planned(gpu: int, start: datetime | None):
+    from zgm.models import Assignment
+    end = start + timedelta(minutes=30) if start else None
+    return Assignment(task_id=f"t{gpu}{start}", gpu_ids=(gpu,), planned_start=start, planned_end=end)
+
+
+def test_time_position_goes_before_the_first_later_start_on_that_gpu():
+    from zgm.screens.schedule import ScheduleScreen
+    t0 = datetime(2026, 10, 25, 12, 0)
+    q = [_planned(0, t0), _planned(1, t0), _planned(0, t0 + timedelta(hours=1))]
+    pos = ScheduleScreen._time_position
+    assert pos(q, 0, t0 - timedelta(minutes=5)) == 0
+    assert pos(q, 0, t0 + timedelta(minutes=30)) == 2  # before the 13:00 one, not the GPU 1 item
+    assert pos(q, 0, t0 + timedelta(hours=2)) == 3  # after the GPU's last item
+    assert pos(q, 1, t0 + timedelta(hours=2)) == 2  # right after GPU 1's last item
+    assert pos(q, 3, t0) == 3  # a GPU with nothing queued: the end
+
+
+def test_time_position_never_jumps_an_item_with_unknown_start():
+    from zgm.screens.schedule import ScheduleScreen
+    t0 = datetime(2026, 10, 25, 12, 0)
+    q = [_planned(0, t0), _planned(0, None)]
+    # unknown start = after everything known: a drop later than t0 goes before it
+    assert ScheduleScreen._time_position(q, 0, t0 + timedelta(hours=5)) == 1
+
+
+def test_history_columns_put_each_gpus_latest_run_next_to_now():
+    from zgm.services.scheduler import Slot
+    from zgm.widgets.gpu_timeline import history_columns
+
+    def run(gpus, minute):
+        t = T0 + timedelta(minutes=minute)
+        return Slot(f"r{minute}", "t", gpus, t, t, "history")
+
+    # GPU 0 ran three times, GPU 1 once (long ago), GPUs 0+1 together in between
+    hist = [run((0,), 0), run((1,), 1), run((0, 1), 2), run((0,), 3), run((0,), 4)]
+    cols = history_columns(hist)
+    assert max(cols) == 3  # column 3 is just left of now
+    assert cols[-1] == 3 and cols[-2] == 2  # GPU 0: newest next to now
+    assert cols[2] == 1  # the two-GPU run lines up on both rows
+    # GPU 1's last run (the two-GPU one) is not next to now: GPU 0's two later runs
+    # are; its older single run sits before the shared column
+    assert cols[1] == 0 and cols[0] == 0

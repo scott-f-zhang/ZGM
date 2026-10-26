@@ -78,8 +78,8 @@ The schedule page has these parts, top to bottom:
 
 - **host**: this machine's CPU, memory, and the disks of the state dir and the home directory (red when less than 10% is free: a full disk makes jobs and zgm fail). In cluster mode the groups of GPUs (e.g. your Slurm jobs or Macs) are listed beside it.
 - **queue**: jobs that are waiting to be given GPUs. New jobs land here when you add them without GPUs, and so do stopped or failed jobs. Jobs marked for auto-fill are on the left, the others (manual) on the right, each side sorted by priority, highest first.
-- **timeline**: one row per GPU, with its memory and load on the left. It has two views, switched with `v`:
-  - **time**: the whole strip is to scale. History uses actual times; running and queued jobs use their estimates, so their blocks sit where they will run. Queued jobs with no estimate cannot be placed on the axis and wait in a `start unknown` tail on the right. The red line is now.
+- **timeline**: one row per GPU, with its memory and load on the left. It has two views; with the timeline focused, `t` switches them:
+  - **time**: the whole strip is to scale. History uses actual times; running and queued jobs use their estimates, so their blocks sit where they will run. Queued jobs with no estimate cannot be placed on the axis and wait in a `start unknown` tail on the right. The red line is now, 70% of the way across (also in the task view).
   - **tasks**: one fixed-width card per run, in order: the last 200 finished runs, then running and queued jobs. A run of a few seconds is as readable as one of several hours.
   A job using several GPUs spans several rows. Both views support placing and dragging jobs.
 - **details**: everything about the selected job. On the right, its config as the configs page's tree shows it, cut down to the config and its parents.
@@ -107,8 +107,8 @@ After 10 minutes without a key or the mouse the view stops redrawing (`IDLE` at 
 | `K` | stop a running job |
 | `p` | pause or resume starting jobs automatically |
 | `1` `2` `3` | schedule / configs / settings view |
-| `v` | switch the timeline between the time view and the task view |
-| `h` `l` / `+` `-` | timeline: pan / zoom the time, or scroll the cards |
+| `t` | focus the timeline; on the timeline, switch between the time view and the task view |
+| `h` `l` / `ctrl`+`+` `ctrl`+`-` | timeline: pan / zoom the time, or scroll the cards / change their width (`+` `-` work too) |
 | `g` | on the timeline: back to now |
 | `Esc` | cancel, or leave full screen; otherwise a menu with Options and Exit (running jobs keep running) |
 

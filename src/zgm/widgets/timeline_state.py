@@ -22,6 +22,8 @@ DEFAULT_CARD_WIDTH = 24
 MIN_CARD_WIDTH = 12
 TIME_VIEW = "time"
 TASK_VIEW = "tasks"
+NOW_FRACTION = 0.7  # both views: "now" sits this far from the strip's left edge
+MAX_CARD_WIDTH = 48
 
 
 def floor_time(t: datetime, minutes: int) -> datetime:
@@ -67,6 +69,7 @@ class TimelineState:
     cursor_zone: str = "time"  # "time" | "tail" | "cards"
     cursor_after: bool = False  # cards/tail: place after the item under the cursor
     cursor_at_now: bool = True  # time view: the cursor follows now until moved
+    cursor_key: str | None = None  # time view: the run left/right selected (follows it)
     tail_width: int = 0  # cells reserved for unknown-start cards (time view)
     now_col: int = 0  # task view: first future column
     scroll_to_now: bool = False  # task view: bring the history/queue boundary into view
@@ -99,8 +102,13 @@ class TimelineState:
         """Cell of "now" in the time area."""
         if self.is_tasks:
             return 0
-        anchor = max(1, self.past_width // 3)
-        return anchor + self.time_pan
+        return self.now_anchor + self.time_pan
+
+    @property
+    def now_anchor(self) -> int:
+        """Time view: where "now" sits unpanned, from the whole strip (not the axis
+        left of the start-unknown tail, so a tail appearing doesn't move it)."""
+        return max(1, int(self.width * NOW_FRACTION))
 
     @property
     def divider_x(self) -> int:
@@ -111,7 +119,24 @@ class TimelineState:
 
     @property
     def future_x0(self) -> int:
-        return 0 if self.is_tasks else self.past_width + 1
+        return self.lead if self.is_tasks else self.past_width + 1
+
+    @property
+    def now_target(self) -> int:
+        """Task view: x where the first future card starts once scrolled to now,
+        so the divider (one cell before it) is at NOW_FRACTION of the strip."""
+        return min(self.width - 1, int(self.width * NOW_FRACTION) + 1)
+
+    @property
+    def lead(self) -> int:
+        """Task view: blank cells left of the first card column, so that card
+        columns line up with ``now_target``."""
+        return self.now_target % self.pitch
+
+    @property
+    def now_cols(self) -> int:
+        """Task view: whole card columns left of ``now_target``."""
+        return self.now_target // self.pitch
 
     @property
     def pitch(self) -> int:
@@ -178,8 +203,13 @@ class TimelineState:
         if x < 0:
             return Hit("label")
         if self.is_tasks:
-            col = self.future_scroll + x // self.pitch
-            return Hit("future", x=x, col=col, after=(x % self.pitch) * 2 >= self.pitch)
+            rel = x - self.future_x0
+            if rel < 0:
+                return Hit("future", x=x, col=None)
+            col = self.future_scroll + rel // self.pitch
+            if col < 0:
+                return Hit("future", x=x, col=None)
+            return Hit("future", x=x, col=col, after=(rel % self.pitch) * 2 >= self.pitch)
         if x < self.past_width:
             return Hit("past", time=self.x_to_time(x), x=x)
         if self.tail_width <= 0 or x < self.future_x0:
@@ -193,6 +223,7 @@ class TimelineState:
         if not self.is_tasks:
             if self.cursor_zone == "time":
                 self.cursor_at_now = False
+                self.cursor_key = None
                 x = (self.cursor_x if self.cursor_x is not None else self.now_x) + delta
                 if x >= self.past_width and self.tail_width > 0:
                     self.cursor_zone, self.cursor_col = "tail", 0
@@ -219,7 +250,25 @@ class TimelineState:
     def set_cursor_x(self, x: int) -> None:
         self.cursor_zone = "time"
         self.cursor_at_now = False
+        self.cursor_key = None
         self.cursor_x = max(0, min(max(0, self.past_width - 1), x))
+
+    def scroll_to_now_col(self) -> None:
+        """Task view: put the history/queue boundary at NOW_FRACTION; with little
+        history the columns left of it stay empty (negative scroll)."""
+        self.future_scroll = self.now_col - self.now_cols
+
+    def select_run(self, key: str, start: datetime, end: datetime) -> None:
+        """Time view: put the cursor on a run, panning so that it is in view."""
+        self.cursor_zone = "time"
+        self.cursor_at_now = False
+        self.cursor_key = key
+        x0, x1 = self.time_to_x(start), self.time_to_x(max(start, end))
+        pw = self.past_width
+        if x1 <= 0 or x0 >= pw:  # off screen: bring its start to the middle
+            self.time_pan += int(round(pw / 2 - x0))
+            x0 = self.time_to_x(start)
+        self.cursor_x = max(0, min(max(0, pw - 1), int(x0)))
 
     def ensure_cursor_visible(self) -> None:
         if self.cursor_col < self.future_scroll:
@@ -244,8 +293,9 @@ class TimelineState:
         if visible <= 0:
             self.future_scroll = 0
             return
-        self.future_scroll = max(0, min(max(0, n_items + 1 - visible),
-                                        self.future_scroll))
+        low = min(0, self.now_col - self.now_cols) if self.is_tasks else 0
+        self.future_scroll = max(low, min(max(low, n_items + 1 - visible),
+                                          self.future_scroll))
 
     def pan_past(self, cells: int) -> None:
         """Positive = further back into history (time view)."""
@@ -261,6 +311,11 @@ class TimelineState:
             self.pan_time(cells * max(1, self.past_width // 3))
 
     def zoom(self, step: int) -> None:
+        """Positive = zoom out. Time view: minutes per cell; task view: card width."""
+        if self.is_tasks:
+            self.card_width = max(MIN_CARD_WIDTH, min(MAX_CARD_WIDTH, self.card_width - 4 * step))
+            self.scroll_to_now = True
+            return
         self.zoom_index = max(0, min(len(ZOOM_LEVELS) - 1, self.zoom_index + step))
 
     def reset(self) -> None:
@@ -275,4 +330,5 @@ class TimelineState:
         self.time_pan = 0
         self.cursor_zone = "time"
         self.cursor_at_now = True
+        self.cursor_key = None
         self.cursor_x = self.now_x

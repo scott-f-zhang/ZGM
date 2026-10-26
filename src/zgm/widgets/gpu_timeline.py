@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import math
+
 from datetime import datetime, timedelta
 
 from rich.segment import Segment
@@ -67,6 +69,16 @@ def slot_columns(slots: list[Slot]) -> tuple[list[int], int]:
                 next_free[g] = col + 1
             cols.append(col)
     return cols, n_run
+
+
+def history_columns(slots: list[Slot]) -> list[int]:
+    """Columns of finished runs (oldest first) packed towards "now": each GPU's
+    latest run sits in the column just before now, the one before it next to
+    that, and so on, so every row's recent history is next to the divider. A
+    multi-GPU run takes the same column on all its rows."""
+    rev = sequential_columns(slots[::-1])
+    depth = max(rev, default=-1) + 1
+    return [depth - 1 - c for c in rev[::-1]]
 
 
 def sequential_columns(slots: list[Slot]) -> list[int]:
@@ -224,10 +236,10 @@ class GPUTimeline(Vertical, can_focus=True):
         Binding("down,j", "gpu(1)", "GPU below", show=False),
         Binding("h", "pan(1)", "time: back / cards: left", show=False),
         Binding("l", "pan(-1)", "time: forward / cards: right", show=False),
-        Binding("plus,equals_sign,=", "zoom(-1)", "time: zoom in", show=False),
-        Binding("minus,-", "zoom(1)", "time: zoom out", show=False),
+        Binding("ctrl+plus,ctrl+equals_sign,plus,equals_sign", "zoom(-1)", "zoom in", show=False),
+        Binding("ctrl+minus,ctrl+underscore,minus", "zoom(1)", "zoom out", show=False),
         Binding("g", "now", "back to now", show=False),
-        Binding("v", "toggle_view", "time/task view"),
+        Binding("t", "toggle_view", "time/task view"),
     ]
 
     class CursorMoved(Message):
@@ -320,7 +332,7 @@ class GPUTimeline(Vertical, can_focus=True):
 
         if st.is_tasks:
             hist = hist[-HISTORY_LIMIT:]
-            hist_cols = sequential_columns(hist)
+            hist_cols = history_columns(hist)
             now_col = max(hist_cols, default=-1) + 1
             cols = hist_cols + [now_col + c for c in future_cols]
             items = hist + slots
@@ -330,7 +342,7 @@ class GPUTimeline(Vertical, can_focus=True):
             st.cursor_zone = "cards"
             st.cursor_col = min(st.cursor_col, self.n_items)
             if st.scroll_to_now:
-                st.future_scroll = max(0, now_col - 2)
+                st.scroll_to_now_col()
                 st.cursor_col = min(now_col, max(0, self.n_items - 1))
                 st.scroll_to_now = False
             st.clamp_scroll(self.n_items)
@@ -345,7 +357,8 @@ class GPUTimeline(Vertical, can_focus=True):
                                         w - 2))
                 cards.append(Card(col, slot.key, slot.task_id, slot.gpu_ids, lines, bg,
                                   fg=fg, kind=slot.kind,
-                                  selected=show_cursor and col == st.cursor_col,
+                                  selected=(show_cursor and col == st.cursor_col
+                                            and st.cursor_gpu in slot.gpu_ids),
                                   dimmed=slot.key == moving, title_lines=title))
             self.axis.columns = dict(zip(cols, items))
             self.axis.labels = self._task_labels(items, cols, slots, future_cols, n_run,
@@ -359,13 +372,22 @@ class GPUTimeline(Vertical, can_focus=True):
             tail_cols = sequential_columns(tail)
             n_tail = max(tail_cols, default=-1) + 1
             need = n_tail * st.pitch if tail else 0
-            st.tail_width = min(max(0, st.width // 2), need) if tail else 0
+            # the tail takes room right of now only, so now stays where it is
+            st.tail_width = min(max(0, st.width - st.now_anchor - 2), need) if tail else 0
             if st.width - st.tail_width < 8:
                 st.tail_width = 0
             self.tail_slots, self.tail_cols = tail, tail_cols
             self.items = hist + slots
             self.cols = tail_cols
             st.cursor_col = min(st.cursor_col, self.n_items)
+            picked = (next((s for s in self.items if s.key == st.cursor_key), None)
+                      if st.cursor_key else None)
+            if picked is None or picked.start is None or st.cursor_gpu not in picked.gpu_ids:
+                st.cursor_key = None
+            elif st.cursor_zone == "time":
+                x0 = st.time_to_x(picked.start)
+                if 0 <= x0 < st.past_width:
+                    st.cursor_x = int(x0)
             if st.cursor_zone == "time":
                 if st.cursor_at_now or st.cursor_x is None:
                     st.cursor_x = max(0, min(max(0, st.past_width - 1), st.now_x))
@@ -388,7 +410,8 @@ class GPUTimeline(Vertical, can_focus=True):
                 label = ("▶ " if slot.kind == "running" else "") + name
                 selected = (show_cursor and st.cursor_zone == "time"
                             and st.cursor_gpu in slot.gpu_ids
-                            and span[0] <= st.cursor_x < span[1])
+                            and (slot.key == st.cursor_key if st.cursor_key
+                                 else span[0] <= st.cursor_x < span[1]))
                 blocks.append(PastBlock(slot.key, span[0], span[1], label, bg, fg,
                                         slot.gpu_ids, selected, slot.kind))
 
@@ -405,7 +428,8 @@ class GPUTimeline(Vertical, can_focus=True):
                 cards.append(Card(col, slot.key, slot.task_id, slot.gpu_ids, lines, bg,
                                   fg=fg, kind=slot.kind,
                                   selected=(show_cursor and st.cursor_zone == "tail"
-                                            and col == st.cursor_col),
+                                            and col == st.cursor_col
+                                            and st.cursor_gpu in slot.gpu_ids),
                                   dimmed=slot.key == moving, title_lines=title))
             self.axis.columns = dict(zip(tail_cols, tail))
             self.axis.labels = {col: "?" for col in tail_cols}
@@ -478,6 +502,10 @@ class GPUTimeline(Vertical, can_focus=True):
                     if c == st.cursor_col]
             return next((s for s in here if st.cursor_gpu in s.gpu_ids),
                         here[0] if len(here) == 1 else None)
+        if st.cursor_key:
+            picked = next((s for s in self.items if s.key == st.cursor_key), None)
+            if picked is not None:
+                return picked
         x = st.cursor_x if st.cursor_x is not None else st.now_x
         here = []
         for probe in (x, x - 1):  # a block that just ended at now owns the cell left of it
@@ -509,6 +537,7 @@ class GPUTimeline(Vertical, can_focus=True):
         if view not in (TIME_VIEW, TASK_VIEW) or view == self.state.view:
             return
         self.state.view = view
+        self.state.cursor_key = None
         if view == TASK_VIEW:
             self.state.cursor_zone = "cards"
             self.state.scroll_to_now = True
@@ -527,15 +556,84 @@ class GPUTimeline(Vertical, can_focus=True):
         self.post_message(self.CursorMoved())
 
     def action_cursor(self, delta: int) -> None:
-        self.state.move_cursor(delta, self.n_items)
+        st = self.state
+        # time view: left/right go from run to run on the cursor's GPU (one cell at
+        # a time would skip short runs or take many presses over long ones and gaps);
+        # placing a task keeps cell steps, to pick the drop time
+        if (not st.is_tasks and st.cursor_zone == "time"
+                and getattr(self.screen, "placement", None) is None):
+            if not self.step_run(delta) and delta > 0 and st.tail_width > 0:
+                st.move_cursor(st.past_width, self.n_items)  # past the axis: the tail
+            self._changed()
+            return
+        if st.is_tasks and getattr(self.screen, "placement", None) is None:
+            # task view: card to card on this GPU's row; nothing further: stay
+            cols = self.card_cols(st.cursor_gpu)
+            nxt = ([c for c in cols if c > st.cursor_col] if delta > 0
+                   else [c for c in cols if c < st.cursor_col])
+            if nxt:
+                st.cursor_col = nxt[0] if delta > 0 else nxt[-1]
+                st.ensure_cursor_visible()
+            self._changed()
+            return
+        st.move_cursor(delta, self.n_items)
         self._changed()
+
+    def card_cols(self, gpu_id: int) -> list[int]:
+        """Task view: the columns holding a card on ``gpu_id``'s row, in order."""
+        return sorted({c for s, c in zip(self.slots, self.cols) if gpu_id in s.gpu_ids})
+
+    def runs_on_cursor_gpu(self) -> list[Slot]:
+        """Time view: the runs on the cursor's GPU that have a time, in time order."""
+        st = self.state
+        row = [s for s in self.items if s.start is not None and s.kind != "ghost"
+               and st.cursor_gpu in s.gpu_ids]
+        return sorted(row, key=lambda s: (s.start, s.end or st.now, s.key))
+
+    def step_run(self, delta: int) -> bool:
+        """Select the run ``delta`` runs away on the cursor's GPU; False if none."""
+        st = self.state
+        row = self.runs_on_cursor_gpu()
+        keys = [s.key for s in row]
+        cur = st.cursor_key if st.cursor_key in keys else None
+        if cur is None:
+            under = self.slot_under_cursor()
+            cur = under.key if under is not None and under.key in keys else None
+        if cur is not None:
+            j = keys.index(cur) + delta
+        else:  # between runs: the first one after / the last one before the cursor
+            t = st.cursor_time
+            after = [i for i, s in enumerate(row) if s.start > t]
+            before = [i for i, s in enumerate(row) if s.start <= t]
+            j = (after[0] if after else len(row)) if delta > 0 else (before[-1] if before else -1)
+        if not 0 <= j < len(row):
+            return False
+        s = row[j]
+        st.select_run(s.key, s.start, s.end or st.now)
+        return True
 
     def action_gpu(self, delta: int) -> None:
         if not self.gpus:
             return
+        st = self.state
         ids = [g.id for g in self.gpus]
-        idx = ids.index(self.state.cursor_gpu) if self.state.cursor_gpu in ids else 0
-        self.state.cursor_gpu = ids[max(0, min(len(ids) - 1, idx + delta))]
+        idx = ids.index(st.cursor_gpu) if st.cursor_gpu in ids else 0
+        if st.is_tasks and getattr(self.screen, "placement", None) is None:
+            # task view: the nearest row with a card that way, on the card closest
+            # to the cursor's column; empty rows are skipped, none left: stay
+            step = 1 if delta > 0 else -1
+            for gpu in ids[idx + step::step] if step > 0 else ids[:idx][::-1]:
+                cols = self.card_cols(gpu)
+                if cols:
+                    st.cursor_gpu = gpu
+                    st.cursor_col = min(cols, key=lambda c: (abs(c - st.cursor_col), c))
+                    st.ensure_cursor_visible()
+                    break
+            else:
+                self._changed()
+                return
+        else:
+            st.cursor_gpu = ids[max(0, min(len(ids) - 1, idx + delta))]
         self.call_after_refresh(self.query_one("#gpu-rows").scroll_to_widget,
                                 self.row_for_gpu(self.state.cursor_gpu), animate=False)
         self._changed()
@@ -545,9 +643,34 @@ class GPUTimeline(Vertical, can_focus=True):
         self._changed()
 
     def action_zoom(self, step: int) -> None:
-        if self.state.is_tasks:
+        """Zoom around the selected run (it stays where it is on screen); with
+        nothing selected, around now. Task view: around the selected card."""
+        st = self.state
+        if st.is_tasks:
+            x = st.col_x(st.cursor_col) if self.slot_under_cursor() is not None else None
+            st.zoom(step)
+            if x is not None:  # keep the selected card where it was
+                st.scroll_to_now = False
+                st.future_scroll = st.cursor_col - max(0, x - st.lead) // st.pitch
+            self._changed()
             return
-        self.state.zoom(step)
+        picked = None
+        if st.cursor_zone == "time" and (st.cursor_key or not st.cursor_at_now):
+            picked = self.slot_under_cursor()
+        before = st.zoom_index
+        if picked is not None and st.cursor_x is not None:
+            x = st.cursor_x
+            t = picked.start if st.cursor_key == picked.key and picked.start else st.x_to_time(x)
+            if picked.start and st.time_to_x(picked.start) < 0:
+                t = st.x_to_time(x)  # starts off the left edge: hold the cursor's time
+            st.zoom(step)
+            if st.zoom_index != before:
+                # the smallest whole-cell pan that puts t in cell x again (rounding
+                # could land it a hair left of x, and the cursor would creep left)
+                st.time_pan = math.ceil((st.now - t) / st.cell + x - st.now_anchor - 1e-9)
+        else:
+            st.zoom(step)  # pan in cells is unchanged, so now stays put
+        self._changed()
         self._changed()
 
     def action_now(self) -> None:

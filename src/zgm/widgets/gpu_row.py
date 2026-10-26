@@ -32,6 +32,16 @@ METER_WIDTH = 8
 PAST_BG = theme.PAST_BG
 FUTURE_BG = theme.MAIN_BG
 NOW_COLOR = theme.NOW
+# the selected block or card is marked by a rainbow bar in the gutter line under it
+RAINBOW = ["#ff3b30", "#ff9500", "#ffcc00", "#34c759", "#00c7be", "#0a84ff", "#5e5ce6", "#bf5af2"]
+
+
+def rainbow_bar(cells: list, x0: int, x1: int, bg) -> None:
+    """Paint ``▀`` in rainbow colours over cells [x0, x1), on background ``bg``."""
+    n = x1 - x0
+    for i in range(n):
+        color = RAINBOW[min(len(RAINBOW) - 1, i * len(RAINBOW) // max(1, n))]
+        cells[x0 + i] = ("▀", Style(color=color, bgcolor=bg, bold=True))
 GRID = theme.DIV_LINE
 
 
@@ -215,19 +225,21 @@ class GPURow(Widget):
             tick = gutter and (t.hour * 60 + t.minute) % mark_every < st.minutes_per_cell
             cells[x] = ("┊" if tick else " ", Style(bgcolor=PAST_BG, color=GRID))
         selected_here = False
-        for b in self.past:
+        # the selected block last, so blocks sharing its cells never hide it
+        for b in sorted(self.past, key=lambda b: b.selected and st.cursor_gpu in b.gpu_ids):
             x0, x1 = max(0, b.x0), min(pw, b.x1)
-            if x1 <= x0 or gutter:
+            if x1 <= x0:
+                continue
+            chosen = b.selected and st.cursor_gpu in b.gpu_ids
+            if gutter:
+                if chosen:
+                    rainbow_bar(cells, x0, x1, PAST_BG)
                 continue
             style = Style(bgcolor=b.bg, color=b.fg)
             for x in range(x0, x1):
                 cells[x] = (" ", style)
-            if b.selected and st.cursor_gpu in b.gpu_ids:
+            if chosen:
                 selected_here = True
-                edge = Style(bgcolor=b.bg, color=theme.TITLE, bold=True)
-                cells[x0] = ("▌", edge)
-                if x1 - x0 > 1:
-                    cells[x1 - 1] = ("▐", edge)
             if x1 - x0 < 3 and y == body // 2:  # too narrow for a label: draw a mark
                 mark = {"running": "▶", "planned": "◇", "ghost": "◇"}.get(b.kind, "▮")
                 cells[x0] = (mark, style + Style(color=theme.TITLE, bold=True))
@@ -259,16 +271,15 @@ class GPURow(Widget):
             x = st.col_x(card.col)
             if x is None or x + w > width:
                 continue
-            if gutter and not (self.next_gpu is not None and self.next_gpu in card.gpu_ids):
+            continues = self.next_gpu is not None and self.next_gpu in card.gpu_ids
+            if gutter and not continues:
+                if card.selected:  # under the card's last row
+                    rainbow_bar(cells, x, x + w, FUTURE_BG)
                 continue
             style = Style(bgcolor=card.bg, color=card.fg, bold=card.kind == "ghost",
                           dim=card.dimmed)
             for i in range(w):
                 cells[x + i] = (" ", style)
-            if card.selected:
-                edge = Style(bgcolor=card.bg, color=theme.TITLE, bold=True)
-                cells[x] = ("▌", edge)
-                cells[x + w - 1] = ("▐", edge)
             if gutter or not self.shows_content(card):
                 continue
             top = (body - len(card.lines)) // 2

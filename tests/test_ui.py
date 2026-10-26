@@ -11,6 +11,7 @@ from zgm.app import ZGMApp
 from zgm.models import Task, TaskStatus
 from zgm.screens.config import ConfigScreen
 from zgm.screens.schedule import ScheduleScreen
+from zgm.services.scheduler import GHOST
 from zgm.widgets.gpu_row import LABEL_WIDTH, GPURow
 from zgm.widgets.gpu_timeline import GPUTimeline
 from zgm.widgets.task_card import TaskCard
@@ -79,12 +80,17 @@ async def test_keyboard_assign_appends_to_queue(config_dir):
         (asg,) = app.store.assignments.values()
         assert asg.task_id == a.id and asg.gpu_ids == (1,)
         assert app.store.tasks[a.id].status == TaskStatus.PLANNED
-        # second task goes behind the first on the same GPU
+        # a new placement starts on the first GPU right after now, wherever the
+        # cursor was left: enter puts the second task at the front of GPU 0
         app.screen.queue.select(b.id)
-        await pilot.press("a", "enter")
+        await pilot.press("a")
+        await pilot.pause()
+        ghost = app.screen.preview.ghost
+        assert ghost.gpu_ids == (0,) and ghost.start <= datetime.now() + timedelta(minutes=1)
+        await pilot.press("enter")
         await pilot.pause()
         ab = app.store.active_assignment(b.id)
-        assert ab.gpu_ids == (1,) and ab.planned_start == asg.planned_end
+        assert ab.gpu_ids == (0,) and ab.planned_start <= asg.planned_start
 
 
 async def test_keyboard_insert_before_existing(config_dir):
@@ -97,8 +103,9 @@ async def test_keyboard_insert_before_existing(config_dir):
         await show_tasks(app, pilot)
         app.screen.queue.select(b.id)
         await pilot.press("a")
-        assert app.screen.timeline.state.cursor_col == 1  # end of the queue
-        await pilot.press("left", "enter")
+        st = app.screen.timeline.state
+        assert st.cursor_gpu == 0 and st.cursor_col == st.now_col  # first column after now
+        await pilot.press("enter")
         await pilot.pause()
         assert planned_names(app) == ["beta", "alpha"]
 
@@ -315,19 +322,25 @@ async def test_task_view_keeps_the_last_200_runs(config_dir):
         assert len([card for card in row.cards if card.kind == "history"]) == 200
 
 
-async def test_v_switches_timeline_views(config_dir):
+async def test_t_switches_timeline_views_once_the_timeline_is_focused(config_dir):
     app = make_app(config_dir, [task("a")])
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
-        await pilot.press("v")  # works from the queue, without focusing the timeline
-        await pilot.pause()
         tl = app.screen.timeline
+        await pilot.press("t")  # from the queue: only focuses the timeline
+        await pilot.pause()
+        assert app.focused is tl and tl.state.view == "time"
+        await pilot.press("t")
+        await pilot.pause()
         assert tl.state.view == "tasks"
         assert "task view" in str(tl.border_subtitle)
-        await pilot.press("v")
+        await pilot.press("t")
         await pilot.pause()
         assert tl.state.view == "time"
         assert "time view" in str(tl.border_subtitle)
+        await pilot.press("v")  # no longer a view key
+        await pilot.pause()
+        assert tl.state.view == "time"
 
 
 async def test_time_view_draws_planned_work_to_scale(config_dir):
@@ -343,6 +356,20 @@ async def test_time_view_draws_planned_work_to_scale(config_dir):
                     if b.key == a.id]
         assert (block.x0, block.x1) == tl.state.span(a.planned_start, a.planned_end)
         assert block.x1 > tl.state.now_x  # it is in the future, drawn to scale
+
+
+async def test_time_view_shows_a_queued_task_of_seconds(config_dir):
+    # a 20 s estimate is far below one cell (15 min) and must still be drawn
+    app = make_app(config_dir)
+    t = make_task(app.store, "blink", hours=20 / 3600)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(t.id, [0])
+        await pilot.pause()
+        a = app.store.active_assignment(t.id)
+        row = app.screen.query_one("#gpu-row-0", GPURow)
+        (block,) = [b for b in row.past if b.key == a.id]
+        assert block.x1 > block.x0
 
 
 async def test_time_view_puts_unknown_starts_in_a_tail(config_dir):
@@ -436,12 +463,19 @@ async def test_mouse_drag_card_after_existing(config_dir):
         await pilot.pause()
         await show_tasks(app, pilot)
         screen = app.screen
+        screen.timeline.state.future_scroll = 0  # room for two queued cards right of now
+        screen.refresh_timeline()
+        await pilot.pause()
         card = screen.query_one(f"#card-{b.id}", TaskCard)
         row = screen.query_one("#gpu-row-0", GPURow)
         await pilot.mouse_down(card, offset=(3, 1))
         await pilot.hover(card, offset=(6, 2))
-        await pilot.hover(row, offset=card_offset(screen.timeline, 0, right_half=True))
-        await pilot.mouse_up(row, offset=card_offset(screen.timeline, 0, right_half=True))
+        await pilot.pause()
+        # the ghost starts in front of alpha, so alpha is drawn one column further
+        col = screen.column_of(app.store.active_assignment(a.id).id)
+        assert col == screen.column_of(GHOST) + 1
+        await pilot.hover(row, offset=card_offset(screen.timeline, col, right_half=True))
+        await pilot.mouse_up(row, offset=card_offset(screen.timeline, col, right_half=True))
         await pilot.pause()
         assert planned_names(app) == ["alpha", "beta"]
 
@@ -457,6 +491,9 @@ async def test_mouse_drag_existing_block(config_dir):
         await show_tasks(app, pilot)
         screen = app.screen
         tl = screen.timeline
+        tl.state.future_scroll = 0  # both queued cards in view (now sits at 70%)
+        screen.refresh_timeline()
+        await pilot.pause()
         row0 = screen.query_one("#gpu-row-0", GPURow)
         row3 = screen.query_one("#gpu-row-3", GPURow)
         await pilot.mouse_down(row0, offset=card_offset(tl, 1))  # beta
@@ -1084,7 +1121,7 @@ async def test_terse_cards_idle_count_and_keys_in_settings(config_dir):
         sections = dict((t, [b.description for b in bs]) for t, bs in app.screen.key_sections())
         keys = " ".join(d for ds in sections.values() for d in ds)
         assert app.screen.query_one("#keys").display
-        assert "unassign" in keys and "time: zoom in" in keys and "derive" in keys
+        assert "unassign" in keys and "zoom in" in keys and "derive" in keys
 
 
 async def test_idle_view_stops_redrawing_and_the_first_key_only_wakes_it(config_dir):
@@ -1123,3 +1160,299 @@ async def test_a_tui_that_runs_the_queue_keeps_running_it_while_idle(config_dir)
         app.assignment_service.assign(a.id, [1])
         app.tick()
         assert app.store.tasks[a.id].status == TaskStatus.RUNNING
+
+
+async def test_task_view_shows_every_gpus_recent_runs_next_to_now(config_dir):
+    from zgm.models import Assignment, AssignmentState
+
+    t = Task("hist", "echo hist", 1)
+    app = make_app(config_dir, [t])
+    now = datetime.now()
+    # GPU 0 ran many times, GPU 2 once: both must be visible left of the divider
+    runs = [(0, 60 - i) for i in range(12)] + [(2, 90)]
+    for gpu, mins in runs:
+        end = now - timedelta(minutes=mins)
+        app.store.save_assignment(Assignment(
+            t.id, (gpu,), end - timedelta(minutes=5), end,
+            actual_start=end - timedelta(minutes=5), actual_end=end,
+            state=AssignmentState.COMPLETED), "completed")
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await show_tasks(app, pilot)
+        tl = app.screen.timeline
+        st = tl.state
+        assert st.divider_x == int(st.width * 0.7)
+        for gpu in (0, 2):
+            row = app.screen.query_one(f"#gpu-row-{gpu}", GPURow)
+            seen = [c for c in row.cards if c.kind == "history" and st.col_x(c.col) is not None]
+            assert seen and max(c.col for c in seen) == st.now_col - 1
+
+
+async def test_cursor_highlights_only_the_card_on_its_gpu(config_dir):
+    a, b = task("alpha"), task("beta")
+    app = make_app(config_dir, [a, b])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(a.id, [0])
+        app.assignment_service.assign(b.id, [1])  # same column, another row
+        await pilot.pause()
+        await show_tasks(app, pilot)
+        await pilot.press("t")
+        await pilot.pause()
+        tl = app.screen.timeline
+        tl.set_cursor(0, tl.column_of(app.store.active_assignment(a.id).id))
+        app.screen.refresh_timeline()
+        await pilot.pause()
+        rows = {g: app.screen.query_one(f"#gpu-row-{g}", GPURow) for g in (0, 1)}
+        assert [c.selected for c in rows[0].cards] == [True]
+        assert [c.selected for c in rows[1].cards] == [False]
+        for g, marked in ((0, True), (1, False)):  # the rainbow bar, only under the selected card
+            gutter = rows[g].render_line(rows[g].size.height - 1).text
+            assert ("▀" in gutter) is marked
+
+
+async def test_ctrl_plus_minus_zoom_both_views(config_dir):
+    app = make_app(config_dir, [task("a")])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("t")  # focus the timeline
+        await pilot.pause()
+        st = app.screen.timeline.state
+        before = st.minutes_per_cell
+        await pilot.press("ctrl+minus")
+        await pilot.pause()
+        assert st.minutes_per_cell > before
+        await pilot.press("ctrl+equals_sign")
+        await pilot.pause()
+        assert st.minutes_per_cell == before
+        await pilot.press("t")  # task view: the same keys widen / narrow the cards
+        await pilot.pause()
+        width = st.card_width
+        await pilot.press("ctrl+equals_sign")
+        await pilot.pause()
+        assert st.card_width > width
+        await pilot.press("ctrl+minus")
+        await pilot.pause()
+        assert st.card_width == width
+
+
+def _finished(app, t, gpu, start, seconds):
+    from zgm.models import Assignment, AssignmentState
+    a = Assignment(t.id, (gpu,), start, start + timedelta(seconds=seconds),
+                   actual_start=start, actual_end=start + timedelta(seconds=seconds),
+                   state=AssignmentState.COMPLETED)
+    app.store.save_assignment(a, "completed")
+    return a.id
+
+
+def _selected(app, gpu=0):
+    row = app.screen.query_one(f"#gpu-row-{gpu}", GPURow)
+    return [b.key for b in row.past if b.selected]
+
+
+async def test_time_view_left_right_go_run_by_run(config_dir):
+    t = Task("r", "echo r", 1)
+    app = make_app(config_dir, [t])
+    now = datetime.now().replace(microsecond=0)
+    long = _finished(app, t, 0, now - timedelta(hours=5), 2 * 3600)  # then a 3 h gap
+    s1 = _finished(app, t, 0, now - timedelta(minutes=30), 10)  # two runs of seconds,
+    s2 = _finished(app, t, 0, now - timedelta(minutes=29), 10)  # both in one 15-min cell
+    _finished(app, t, 1, now - timedelta(minutes=40), 60)  # another GPU: not visited
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("t")  # focus the timeline (time view)
+        await pilot.pause()
+        tl = app.screen.timeline
+        for key in (s2, s1, long):
+            await pilot.press("left")
+            await pilot.pause()
+            assert _selected(app) == [key]
+            assert tl.slot_under_cursor().key == key
+        await pilot.press("left")  # nothing earlier: stays
+        await pilot.pause()
+        assert _selected(app) == [long]
+        await pilot.press("right")
+        await pilot.pause()
+        assert _selected(app) == [s1]
+        await pilot.press("ctrl+minus")  # zooming keeps the selected run
+        await pilot.pause()
+        assert _selected(app) == [s1]
+
+
+async def test_time_view_left_pans_to_a_run_out_of_view(config_dir):
+    t = Task("old", "echo old", 1)
+    app = make_app(config_dir, [t])
+    now = datetime.now()
+    old = _finished(app, t, 0, now - timedelta(days=3), 600)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("t")
+        await pilot.pause()
+        st = app.screen.timeline.state
+        assert st.span(now - timedelta(days=3), now - timedelta(days=3, minutes=-10)) is None
+        await pilot.press("left")
+        await pilot.pause()
+        assert _selected(app) == [old] and st.time_pan > 0
+
+
+async def test_placing_in_the_time_view_still_moves_one_cell(config_dir):
+    a = task("alpha")
+    app = make_app(config_dir, [a])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("a")  # place the selected card: the cursor picks a time
+        await pilot.pause()
+        st = app.screen.timeline.state
+        assert app.screen.placement is not None and st.cursor_zone == "time"
+        x = st.cursor_x
+        await pilot.press("right")
+        await pilot.pause()
+        assert st.cursor_x == x + 1
+
+
+@pytest.mark.parametrize("view", ["time", "tasks"])
+async def test_dragging_from_the_queue_keeps_now_and_starts_on_gpu0_after_now(config_dir, view):
+    app = make_app(config_dir)
+    alpha = make_task(app.store, "alpha", hours=1)
+    noest = make_task(app.store, "noest", hours=None)
+    beta = make_task(app.store, "beta", hours=None)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        # alpha then a run with no estimate on GPU 0: beta behind them has no known
+        # start, so its ghost brings up the start-unknown tail in the time view
+        app.assignment_service.assign(alpha.id, [0])
+        app.assignment_service.assign(noest.id, [0])
+        screen = app.screen
+        tl = screen.timeline
+        tl.set_view(view)
+        tl.state.cursor_gpu = 2  # the cursor was left on the third row
+        screen.refresh_all()
+        await pilot.pause()
+        divider = tl.state.divider_x
+        assert divider == int(tl.state.width * 0.7)
+        card = screen.query_one(f"#card-{beta.id}", TaskCard)
+        await pilot.mouse_down(card, offset=(3, 1))
+        await pilot.hover(card, offset=(6, 2))  # dragging, still over the queue
+        await pilot.pause()
+        ghost = screen.preview.ghost
+        assert ghost.gpu_ids == (0,) and screen.preview.position == 0  # GPU 0, right after now
+        assert tl.state.divider_x == divider
+        row = screen.query_one("#gpu-row-0", GPURow)
+        for x in (2, tl.state.width // 2, tl.state.width - 3):
+            await pilot.hover(row, offset=(LABEL_WIDTH + x, 0))
+            await pilot.pause()
+            assert tl.state.divider_x == divider
+        await pilot.press("escape")
+
+
+async def test_selected_run_is_drawn_on_top_with_a_rainbow_bar_under_it(config_dir):
+    a, b = Task("aaa", "echo a", 1), Task("bbb", "echo b", 1)
+    app = make_app(config_dir, [a, b])
+    now = datetime.now().replace(microsecond=0)
+    ka = _finished(app, a, 0, now - timedelta(minutes=30), 10)  # two runs of seconds
+    kb = _finished(app, b, 0, now - timedelta(minutes=29), 10)  # in the same cell
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("t")  # focus the timeline (time view)
+        await pilot.pause()
+        row = app.screen.query_one("#gpu-row-0", GPURow)
+        body = row.size.height - 1
+        for key in (kb, ka):
+            await pilot.press("left")
+            await pilot.pause()
+            (block,) = [blk for blk in row.past if blk.selected]
+            assert block.key == key
+            mid = row.render_line(body // 2)
+            x = LABEL_WIDTH + block.x0
+            cell = mid.crop(x, x + 1)
+            assert {seg.style.bgcolor.name for seg in cell} == {block.bg.lower()}  # on top
+            under = row.render_line(body).crop(x, x + (block.x1 - block.x0)).text
+            assert set(under) == {"▀"}  # the rainbow bar
+            assert "▌" not in row.render_line(body // 2).text  # no side marks any more
+
+
+async def test_zoom_keeps_the_selected_run_in_place_else_now(config_dir):
+    t = Task("z", "echo z", 1)
+    app = make_app(config_dir, [t])
+    now = datetime.now().replace(microsecond=0)
+    old = _finished(app, t, 0, now - timedelta(hours=6), 1800)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("t")  # focus the timeline (time view)
+        await pilot.pause()
+        st = app.screen.timeline.state
+        now_x = st.now_x
+        await pilot.press("ctrl+minus")  # nothing selected: around now
+        await pilot.pause()
+        assert st.now_x == now_x
+        await pilot.press("ctrl+equals_sign")
+        await pilot.pause()
+        await pilot.press("left")  # select the run 6 h back
+        await pilot.pause()
+        assert _selected(app) == [old]
+        x = st.cursor_x  # the run's start cell
+        for key in ("ctrl+minus", "ctrl+minus", "ctrl+equals_sign"):
+            await pilot.press(key)
+            await pilot.pause()
+            assert abs(st.time_to_x(now - timedelta(hours=6)) - x) < 1  # it stays put
+            assert st.cursor_x == x
+            assert _selected(app) == [old]
+        assert st.now_x != now_x  # the axis moved around the run instead
+
+
+async def test_task_view_zoom_keeps_the_selected_card_in_place(config_dir):
+    t = Task("c", "echo c", 1)
+    app = make_app(config_dir, [t])
+    now = datetime.now().replace(microsecond=0)
+    for i in range(8):
+        _finished(app, t, 0, now - timedelta(minutes=100 - 10 * i), 60)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("t", "t")  # focus, then the task view
+        await pilot.pause()
+        tl = app.screen.timeline
+        st = tl.state
+        await pilot.press("left")  # the latest finished run
+        await pilot.pause()
+        col = st.cursor_col
+        x = st.col_x(col)
+        assert x is not None and tl.slot_under_cursor() is not None
+        await pilot.press("ctrl+equals_sign")  # wider cards
+        await pilot.pause()
+        assert st.cursor_col == col and st.col_x(col) is not None
+        assert abs(st.col_x(col) - x) < st.pitch
+
+
+async def test_task_view_arrows_only_land_on_cards(config_dir):
+    t = Task("k", "echo k", 1)
+    app = make_app(config_dir, [t])
+    now = datetime.now().replace(microsecond=0)
+    g0 = [_finished(app, t, 0, now - timedelta(minutes=m), 60) for m in (90, 60, 30)]
+    g2 = _finished(app, t, 2, now - timedelta(minutes=45), 60)  # GPU 1 and 3 stay empty
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("t", "t")  # focus, then the task view
+        await pilot.pause()
+        tl = app.screen.timeline
+        st = tl.state
+        tl.set_cursor(0, tl.column_of(g0[-1]))  # GPU 0's latest run
+        await pilot.pause()
+
+        def at():
+            return st.cursor_gpu, tl.slot_under_cursor().key
+
+        await pilot.press("right")  # nothing right of it on this row: stays
+        await pilot.pause()
+        assert at() == (0, g0[-1])
+        await pilot.press("left", "left", "left")  # two to the left, then the row's end
+        await pilot.pause()
+        assert at() == (0, g0[0])
+        await pilot.press("down")  # GPU 1 is empty: skipped
+        await pilot.pause()
+        assert at() == (2, g2)
+        await pilot.press("down")  # no card below: stays
+        await pilot.pause()
+        assert at() == (2, g2)
+        await pilot.press("up")
+        await pilot.pause()
+        assert st.cursor_gpu == 0 and tl.slot_under_cursor() is not None

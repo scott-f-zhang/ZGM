@@ -75,7 +75,6 @@ class ScheduleScreen(Screen):
         Binding("d", "focus_panel('details')", "details", show=False),
         Binding("t", "focus_panel('timeline')", "timeline", show=False),
         Binding("s", "focus_panel('cluster')", "cluster", show=False),
-        Binding("v", "toggle_timeline_view", "timeline: time/tasks", show=False),
     ]
     # panel -> its widget; each is focused with the first letter of its title
     # (Tab goes through them in this order)
@@ -147,9 +146,9 @@ class ScheduleScreen(Screen):
 
     def update_timeline_footer(self) -> None:
         if self.timeline.state.is_tasks:
-            text = "task view ┃ recent 200 runs ┃ v: time view"
+            text = "task view ┃ recent 200 runs ┃ t: time view"
         else:
-            text = "time view ┃ past + estimates to scale ┃ v: task view"
+            text = "time view ┃ past + estimates to scale ┃ t: task view"
         self.timeline.border_subtitle = box_footer(text)
 
     def retitle_timeline(self) -> None:
@@ -400,8 +399,10 @@ class ScheduleScreen(Screen):
                 st.cursor_gpu = a.gpu_ids[0]
                 col = self.column_of(assignment_id)
                 st.cursor_col = col if col is not None else self.timeline.n_items
-            else:
-                st.cursor_col = self.timeline.n_items
+            else:  # the first GPU, the first column after now
+                if self.app.gpus:
+                    st.cursor_gpu = self.app.gpus[0].id
+                st.cursor_col = st.now_col
         elif assignment_id:
             a = self.store.assignments[assignment_id]
             st.cursor_gpu = a.gpu_ids[0]
@@ -413,17 +414,12 @@ class ScheduleScreen(Screen):
                 col = self.column_of(assignment_id)
                 st.cursor_col = col if col is not None else self.timeline.n_items
         else:
-            # append: the end of the known queue, or the unknown tail when an
-            # estimate is missing (everything behind it is unknown too)
-            planned = self.svc.planned()
-            if any(a.planned_end is None for a in planned):
-                st.cursor_zone = "tail"
-                st.cursor_col = self.timeline.n_items
-            else:
-                ends = [a.planned_end for a in planned if a.planned_end]
-                target = max(ends) if ends else datetime.now()
-                st.cursor_zone = "time"
-                st.set_cursor_x(st.time_cell(target))
+            # a new placement starts on the first GPU, right after now (behind what
+            # runs there, before what is queued there), in either view
+            if self.app.gpus:
+                st.cursor_gpu = self.app.gpus[0].id
+            st.cursor_zone = "time"
+            st.set_cursor_x(st.now_x)
         if not via_mouse:
             self.timeline.focus()
         self.refresh_timeline()
@@ -530,9 +526,6 @@ class ScheduleScreen(Screen):
         if self.zoomed and self.zoomed != name:
             self.set_zoom(name)  # full screen follows the focus
         self.panel_widget(name).focus()
-
-    def action_toggle_timeline_view(self) -> None:
-        self.timeline.action_toggle_view()
 
     def action_toggle_zoom(self) -> None:
         if self.placement:
