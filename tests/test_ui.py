@@ -386,6 +386,27 @@ async def test_time_view_puts_unknown_starts_in_a_tail(config_dir):
         assert "start unknown" in strip_text(app.screen.query_one("#gpu-row-0", GPURow))
 
 
+async def test_time_view_tail_starts_where_known_work_ends(config_dir):
+    # behind a run of unknown length, the start-unknown card follows now, not the
+    # far end of the axis (which would read as "starts hours from now")
+    a, b = task("a"), task("b")
+    app = make_app(config_dir, [a, b])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        app.assignment_service.assign(a.id, [0])
+        app.assignment_service.assign(b.id, [0])
+        await pilot.pause()
+        st = app.screen.timeline.state
+        assert st.future_x0 <= st.now_x + 3
+        # behind a queued task with an estimate, it follows that task's end
+        c = make_task(app.store, "c", hours=2)
+        app.assignment_service.assign(c.id, [1])
+        await pilot.pause()
+        (known,) = [s for s in app.screen.timeline.slots if s.task_id == c.id]
+        assert st.now_x < st.time_to_x(known.end) <= st.past_width
+        assert st.future_x0 <= st.time_to_x(known.end) + 3
+
+
 async def test_time_view_placement_before_a_planned_task(config_dir):
     app = make_app(config_dir)
     a = make_task(app.store, "a", hours=1)

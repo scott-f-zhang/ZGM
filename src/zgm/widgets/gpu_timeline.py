@@ -372,8 +372,14 @@ class GPUTimeline(Vertical, can_focus=True):
             tail_cols = sequential_columns(tail)
             n_tail = max(tail_cols, default=-1) + 1
             need = n_tail * st.pitch if tail else 0
-            # the tail takes room right of now only, so now stays where it is
-            st.tail_width = min(max(0, st.width - st.now_anchor - 2), need) if tail else 0
+            # the tail takes room right of now only, so now stays where it is, and
+            # starts where the known work ends (now, or the last estimated end): a
+            # tail at the far right would read as starting hours from now
+            known = [math.ceil(st.time_to_x(s.end)) for s in [*hist, *slots]
+                     if s.start is not None and s.end is not None]
+            edge = max([st.now_x + 1, *known])
+            room = max(0, st.width - st.now_anchor - 2)
+            st.tail_width = min(room, max(need, st.width - edge - 1)) if tail else 0
             if st.width - st.tail_width < 8:
                 st.tail_width = 0
             self.tail_slots, self.tail_cols = tail, tail_cols
